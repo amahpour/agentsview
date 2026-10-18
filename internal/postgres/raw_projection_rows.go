@@ -185,6 +185,76 @@ func (s *RawProjectionStore) refreshStaleRawFriction(
 	return insertPGFrictionFindings(ctx, tx, id, p.Friction.Findings)
 }
 
+// refreshRawDialogue runs under Project's group locks and lease fence. Dialogue
+// does not change content identity or embeddings, so repair physical rows even
+// when the saved payload already contains the current projection.
+func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message) error {
+	dialogue := make(map[int]*string, len(messages))
+	for _, m := range messages {
+		if m.DialogueText == nil {
+			dialogue[m.Ordinal] = nil
+		} else {
+			dialogue[m.Ordinal] = new(sanitizePG(*m.DialogueText))
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT ordinal, dialogue_text FROM messages WHERE session_id=$1 FOR UPDATE`, id)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var updates []int
+	for rows.Next() {
+		var ordinal int
+		var stored sql.NullString
+		if err := rows.Scan(&ordinal, &stored); err != nil {
+			return err
+		}
+		wanted, exists := dialogue[ordinal]
+		if !exists {
+			continue
+		}
+		if stored.Valid != (wanted != nil) || wanted != nil && stored.String != *wanted {
+			updates = append(updates, ordinal)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, ordinal := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET dialogue_text=$3 WHERE session_id=$1 AND ordinal=$2`, id, ordinal, dialogue[ordinal]); err != nil {
+			return err
+		}
+	}
+	saved, err := loadRawPayload(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range saved.Messages {
+		m := &saved.Messages[i]
+		wanted, exists := dialogue[m.Ordinal]
+		if !exists {
+			continue
+		}
+		if (m.DialogueText == nil) != (wanted == nil) || wanted != nil && *m.DialogueText != *wanted {
+			m.DialogueText = wanted
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	payload, err := encodeRawPayload(saved)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE raw_content_revisions SET payload=$2 WHERE session_id=$1`, id, payload)
+	return err
+}
+
 func (s *RawProjectionStore) writePayload(ctx context.Context, tx *sql.Tx, id, group, revision string, p ingest.PreparedSession) error {
 	p.Session.ID = id
 	p.Session.FilePath = nil

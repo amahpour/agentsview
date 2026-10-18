@@ -46,16 +46,56 @@ func rawBaseAlias(m rawsync.CanonicalManifest, s db.Session) string {
 	return s.ID
 }
 
+// rawSessionPayload keeps the prepared fields at their existing gob names.
+// Gob flattens *string values and omits empty strings, so classified empty
+// dialogue needs its own ordinal list to survive materialization from payload.
+type rawSessionPayload struct {
+	Session               db.Session
+	Messages              []db.Message
+	UsageEvents           []db.UsageEvent
+	PlanUsage             *db.SessionPlanUsage
+	Signals               db.SessionSignalUpdate
+	Findings              []db.SecretFinding
+	Friction              db.SessionFrictionUpdate
+	Validation            db.ValidationStats
+	EmptyDialogueOrdinals []int
+}
+
 func encodeRawPayload(p ingest.PreparedSession) ([]byte, error) {
+	payload := rawSessionPayload{
+		Session: p.Session, Messages: p.Messages, UsageEvents: p.UsageEvents,
+		PlanUsage: p.PlanUsage, Signals: p.Signals, Findings: p.Findings,
+		Friction: p.Friction, Validation: p.Validation,
+	}
+	for _, m := range p.Messages {
+		if m.DialogueText != nil && *m.DialogueText == "" {
+			payload.EmptyDialogueOrdinals = append(payload.EmptyDialogueOrdinals, m.Ordinal)
+		}
+	}
 	var b bytes.Buffer
-	err := gob.NewEncoder(&b).Encode(p)
+	err := gob.NewEncoder(&b).Encode(payload)
 	return b.Bytes(), err
 }
 
 func decodeRawPayload(b []byte) (ingest.PreparedSession, error) {
-	var p ingest.PreparedSession
-	err := gob.NewDecoder(bytes.NewReader(b)).Decode(&p)
-	return p, err
+	var payload rawSessionPayload
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&payload); err != nil {
+		return ingest.PreparedSession{}, err
+	}
+	empty := make(map[int]bool, len(payload.EmptyDialogueOrdinals))
+	for _, ordinal := range payload.EmptyDialogueOrdinals {
+		empty[ordinal] = true
+	}
+	for i := range payload.Messages {
+		if empty[payload.Messages[i].Ordinal] {
+			payload.Messages[i].DialogueText = new("")
+		}
+	}
+	return ingest.PreparedSession{
+		Session: payload.Session, Messages: payload.Messages, UsageEvents: payload.UsageEvents,
+		PlanUsage: payload.PlanUsage, Signals: payload.Signals, Findings: payload.Findings,
+		Friction: payload.Friction, Validation: payload.Validation,
+	}, nil
 }
 
 // rawContentRevision hashes a versioned structural representation of every
@@ -194,7 +234,7 @@ func rawCanonicalValue(v reflect.Value, field string) (any, error) {
 			// Projection bookkeeping and inherited trash scope add no content.
 			// Omit empty GroupKey and PlanUsage values so existing revisions stay stable. Derived tool
 			// observation fields preserve the historical normalized-content-v1 representation.
-			// DialogueText is a local search projection, not captured source content.
+			// DialogueText is a derived search projection; reparses refresh it in place.
 			if !f.IsExported() || f.Name == "UsageAutomationProjected" || f.Name == "TrashIncludesCodexPages" ||
 				(v.Type() == reflect.TypeFor[db.Message]() && f.Name == "DialogueText") ||
 				f.Name == "ToolObservations" || f.Name == "ObservedOutcome" || f.Name == "ObservedRepeat" || f.Name == "SequenceEnding" ||
