@@ -60,9 +60,16 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 				var ordinal int
 				require.NoError(t, locked.QueryRowContext(t.Context(), `SELECT ordinal FROM messages WHERE session_id=$1 AND ordinal=1 FOR UPDATE`, before.SessionID).Scan(&ordinal))
 			}
+			beforeRefresh, err := f.sink.Resolve(t.Context(), "codex:portable")
+			require.NoError(t, err)
 			require.NoError(t, f.sink.Project(t.Context(), leases[0], m, outcome))
 			after, err := f.sink.Resolve(t.Context(), "codex:portable")
 			require.NoError(t, err)
+			if stage == "no-op with locked message" {
+				assert.Equal(t, beforeRefresh.CorpusRevision, after.CorpusRevision)
+			} else {
+				assert.Equal(t, beforeRefresh.CorpusRevision+1, after.CorpusRevision)
+			}
 			assert.Equal(t, before.SessionID, after.SessionID)
 			var gotRevision string
 			var gotRevisions, gotOutbox int

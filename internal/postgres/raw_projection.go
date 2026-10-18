@@ -229,9 +229,11 @@ func (s *RawProjectionStore) Project(ctx context.Context, lease rawderive.JobLea
 			return err
 		}
 		if count == 0 {
-			if err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages, payload); err != nil {
+			dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages, payload)
+			if err != nil {
 				return err
 			}
+			derivedChanged = derivedChanged || dialogueChanged
 		}
 		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals)
 		if err != nil {

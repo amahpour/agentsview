@@ -187,8 +187,9 @@ func (s *RawProjectionStore) refreshStaleRawFriction(
 
 // refreshRawDialogue runs under Project's group locks and lease fence. Dialogue
 // does not change content identity or embeddings, so repair physical rows even
-// when the saved payload already contains the current projection.
-func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message, payload []byte) error {
+// when the saved payload already contains the current projection. It reports
+// whether physical rows changed so the caller can publish the corpus revision.
+func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message, payload []byte) (bool, error) {
 	dialogue := make(map[int]*string, len(messages))
 	for _, m := range messages {
 		if m.DialogueText == nil {
@@ -199,7 +200,7 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT ordinal, dialogue_text FROM messages WHERE session_id=$1`, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer rows.Close()
 	var updates []int
@@ -207,7 +208,7 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		var ordinal int
 		var stored sql.NullString
 		if err := rows.Scan(&ordinal, &stored); err != nil {
-			return err
+			return false, err
 		}
 		wanted, exists := dialogue[ordinal]
 		if !exists {
@@ -218,29 +219,29 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return false, err
 	}
 	// Equal encoded payloads prove the saved dialogue is current without
 	// decoding the content graph. Physical rows still need their own check:
 	// an earlier payload can be materialized with missing dialogue.
 	var payloadCurrent bool
 	if err := tx.QueryRowContext(ctx, `SELECT payload=$2 FROM raw_content_revisions WHERE session_id=$1`, id, payload).Scan(&payloadCurrent); err != nil {
-		return err
+		return false, err
 	}
 	for _, ordinal := range updates {
 		if _, err := tx.ExecContext(ctx, `UPDATE messages SET dialogue_text=$3 WHERE session_id=$1 AND ordinal=$2`, id, ordinal, dialogue[ordinal]); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if payloadCurrent {
-		return nil
+		return len(updates) > 0, nil
 	}
 	saved, err := loadRawPayload(ctx, tx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	changed := false
 	for i := range saved.Messages {
@@ -255,14 +256,14 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		}
 	}
 	if !changed {
-		return nil
+		return len(updates) > 0, nil
 	}
 	payload, err = encodeRawPayload(saved)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE raw_content_revisions SET payload=$2 WHERE session_id=$1`, id, payload)
-	return err
+	return len(updates) > 0, err
 }
 
 func (s *RawProjectionStore) writePayload(ctx context.Context, tx *sql.Tx, id, group, revision string, p ingest.PreparedSession) error {
