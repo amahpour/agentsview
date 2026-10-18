@@ -169,6 +169,11 @@ func (c *pushAliasRoutingConn) QueryContext(
 			columns: []string{"coalesce"},
 			values:  [][]driver.Value{{0}},
 		}, nil
+	case normalized == "select to_regclass('raw_content_revisions') is not null":
+		return &pushAliasRoutingRows{
+			columns: []string{"exists"},
+			values:  [][]driver.Value{{false}},
+		}, nil
 	case strings.Contains(normalized, "from information_schema.tables"):
 		return &pushAliasRoutingRows{
 			columns: []string{"exists"},
