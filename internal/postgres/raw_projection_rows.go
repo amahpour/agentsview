@@ -203,7 +203,8 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		return false, err
 	}
 	defer rows.Close()
-	var updates []int
+	var ordinals []int
+	var dialogues []*string
 	for rows.Next() {
 		var ordinal int
 		var stored sql.NullString
@@ -215,7 +216,8 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 			continue
 		}
 		if stored.Valid != (wanted != nil) || wanted != nil && stored.String != *wanted {
-			updates = append(updates, ordinal)
+			ordinals = append(ordinals, ordinal)
+			dialogues = append(dialogues, wanted)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -231,13 +233,15 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 	if err := tx.QueryRowContext(ctx, `SELECT payload=$2 FROM raw_content_revisions WHERE session_id=$1`, id, payload).Scan(&payloadCurrent); err != nil {
 		return false, err
 	}
-	for _, ordinal := range updates {
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET dialogue_text=$3 WHERE session_id=$1 AND ordinal=$2`, id, ordinal, dialogue[ordinal]); err != nil {
+	if len(ordinals) > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages AS m SET dialogue_text=u.dialogue
+			FROM unnest($2::integer[], $3::text[]) AS u(ordinal, dialogue)
+			WHERE m.session_id=$1 AND m.ordinal=u.ordinal`, id, ordinals, dialogues); err != nil {
 			return false, err
 		}
 	}
 	if payloadCurrent {
-		return len(updates) > 0, nil
+		return len(ordinals) > 0, nil
 	}
 	saved, err := loadRawPayload(ctx, tx, id)
 	if err != nil {
@@ -256,14 +260,14 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		}
 	}
 	if !changed {
-		return len(updates) > 0, nil
+		return len(ordinals) > 0, nil
 	}
 	payload, err = encodeRawPayload(saved)
 	if err != nil {
 		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE raw_content_revisions SET payload=$2 WHERE session_id=$1`, id, payload)
-	return len(updates) > 0, err
+	return len(ordinals) > 0, err
 }
 
 func (s *RawProjectionStore) writePayload(ctx context.Context, tx *sql.Tx, id, group, revision string, p ingest.PreparedSession) error {

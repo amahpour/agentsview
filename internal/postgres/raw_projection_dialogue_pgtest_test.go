@@ -20,6 +20,7 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	outcome := projectionOutcome("question")
 	const rendered = "[Thinking]\nreasonneedle\n[/Thinking]\nanswerneedle\n[Bash] $ commandneedle"
 	parsed := &outcome.Outcome.Results[0].Result
+	parsed.Messages[0].DialogueText = new("question")
 	parsed.Messages[1].Content = rendered
 	parsed.Messages[1].ThinkingText = "reasonneedle"
 	parsed.Messages[1].HasThinking = true
@@ -35,7 +36,8 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM raw_content_revisions`).Scan(&revisions))
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM raw_embedding_outbox`).Scan(&outbox))
 	store := &Store{pg: f.runtime}
-	// An older saved payload and physical rows both lack the projection.
+	// Clear one projection while classifying the assistant and tool rows.
+	parsed.Messages[0].DialogueText = nil
 	parsed.Messages[1].DialogueText = new("answerneedle")
 	parsed.Messages[2].DialogueText = new("")
 	f.runtime.SetMaxOpenConns(1)
@@ -79,6 +81,9 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 			assert.Equal(t, revision, gotRevision)
 			assert.Equal(t, revisions, gotRevisions)
 			assert.Equal(t, outbox, gotOutbox)
+			var unclassified bool
+			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT dialogue_text IS NULL FROM messages WHERE session_id=$1 AND ordinal=0`, after.SessionID).Scan(&unclassified))
+			assert.True(t, unclassified, "cleared dialogue stays NULL rather than classified empty")
 			for _, pattern := range []string{"answerneedle", "reasonneedle", "commandneedle", "toolneedle"} {
 				page, err := store.SearchContent(t.Context(), db.ContentSearchFilter{Pattern: pattern, Sources: []string{"messages"}, IncludeOneShot: true})
 				require.NoError(t, err)
@@ -99,6 +104,7 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 			defer tx.Rollback()
 			payload, err := loadRawPayload(t.Context(), tx, after.SessionID)
 			require.NoError(t, err)
+			assert.Nil(t, payload.Messages[0].DialogueText)
 			require.NotNil(t, payload.Messages[1].DialogueText)
 			assert.Equal(t, "answerneedle", *payload.Messages[1].DialogueText)
 			require.NotNil(t, payload.Messages[2].DialogueText)
