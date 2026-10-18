@@ -107,6 +107,7 @@ this as the owner before starting the runtime:
 ```sql
 GRANT USAGE ON SCHEMA hosted_sessions TO hosted_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA hosted_sessions TO hosted_runtime;
+GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime;
 
 GRANT INSERT ON hosted_sessions.raw_device_tokens,
   hosted_sessions.raw_manifest_entries, hosted_sessions.raw_manifest_objects,
@@ -143,6 +144,10 @@ GRANT USAGE ON SEQUENCE hosted_sessions.raw_ingest_jobs_id_seq,
   hosted_sessions.usage_events_id_seq, hosted_sessions.pinned_messages_id_seq
   TO hosted_runtime;
 ```
+
+After upgrading an existing runtime, the owner must apply the
+`UPDATE (dialogue_text)` grant above. The runtime fails startup until it has
+that privilege.
 
 Sequence names above are those created by provisioning. For an adopted schema,
 resolve the actual owned sequence with `pg_get_serial_sequence`; serial IDs need

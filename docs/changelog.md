@@ -11,7 +11,7 @@ The latest release is
 
 - `--fts`, terms, and hybrid message search no longer match command, path, and reasoning text.
 
-- SQLite, DuckDB, and ClickHouse message search matches dialogue and keeps tool
+- SQLite, PostgreSQL, DuckDB, and ClickHouse message search matches dialogue and keeps tool
   renderings and reasoning out of snippets for
   [supported providers](https://github.com/kenn-io/agentsview/blob/main/docs/session-api.md#agentsview-session-search).
   Substring and regex search on these backends include reasoning as `thinking`
@@ -25,7 +25,10 @@ The latest release is
   sessions without dialogue, and needs schema permissions. Reads from either
   pre-upgrade mirror fail with a schema compatibility error naming
   `messages.dialogue_text` until the first push.
-  Artifact transport and PostgreSQL dialogue search are a separate follow-up;
+  PostgreSQL performs one full push per scope after upgrading; hosted servers
+  refresh existing uploads with `agentsview pg raw-reparse hosted --run-id <id>`.
+  Repeat the same run ID until it reports `complete=true`.
+  Artifact transport is a separate follow-up;
   semantic search continues to use rendered messages.
 
 **Upgrade notes**
