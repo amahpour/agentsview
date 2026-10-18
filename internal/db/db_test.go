@@ -6952,6 +6952,10 @@ func TestCopySyncStateFrom_OnlyCopiesDurableKeys(t *testing.T) {
 		"seed source marker")
 	require.NoError(t, srcDB.SetSyncState(t.Context(), "artifact_origin_id", "laptop-a1b2c3"),
 		"seed source artifact origin")
+	require.NoError(t, srcDB.SetSyncState(t.Context(), "pg_push_state_saved_v1:scope", "1"),
+		"seed source scoped push-state mark")
+	require.NoError(t, srcDB.SetSyncState(t.Context(), "last_push_at:scope", "old-push"),
+		"seed source scoped push watermark")
 	require.NoError(t, srcDB.SetSyncState(t.Context(), "last_sync_started_at", "old-start"),
 		"seed source started")
 	require.NoError(t, srcDB.SetSyncState(t.Context(), "last_sync_finished_at", "old-finish"),
@@ -6980,6 +6984,15 @@ func TestCopySyncStateFrom_OnlyCopiesDurableKeys(t *testing.T) {
 	gotMarker, err := dstDB.GetSyncState(t.Context(), "pg_push_marker_id")
 	require.NoError(t, err, "GetSyncState pg_push_marker_id")
 	assert.Equal(t, "marker-123", gotMarker)
+
+	// The mark survives and the watermark does not, so the next push of
+	// that scope knows it lost its push state.
+	gotSaved, err := dstDB.GetSyncState(t.Context(), "pg_push_state_saved_v1:scope")
+	require.NoError(t, err, "GetSyncState pg_push_state_saved_v1:scope")
+	assert.Equal(t, "1", gotSaved)
+	gotPush, err := dstDB.GetSyncState(t.Context(), "last_push_at:scope")
+	require.NoError(t, err, "GetSyncState last_push_at:scope")
+	assert.Empty(t, gotPush)
 
 	gotOrigin, err := dstDB.GetSyncState(t.Context(), "artifact_origin_id")
 	require.NoError(t, err, "GetSyncState artifact_origin_id")
