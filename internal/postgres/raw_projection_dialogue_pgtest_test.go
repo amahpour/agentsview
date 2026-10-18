@@ -22,6 +22,7 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	outcome := projectionOutcome("question")
 	const rendered = "[Thinking]\nreasonneedle\n[/Thinking]\nanswerneedle\n[Bash] $ commandneedle"
 	parsed := &outcome.Outcome.Results[0].Result
+	parsed.Messages[0].Content = "question\n[Bash] $ usercommandneedle"
 	parsed.Messages[0].DialogueText = new("question")
 	parsed.Messages[1].Content = rendered
 	parsed.Messages[1].ThinkingText = "reasonneedle"
@@ -31,6 +32,11 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	before, err := f.sink.Resolve(t.Context(), "codex:portable")
 	require.NoError(t, err)
 	require.Equal(t, RawIdentityUnique, before.State)
+	var initialContent string
+	var initialDialogue sql.NullString
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT content,dialogue_text FROM messages WHERE session_id=$1 AND ordinal=0`, before.SessionID).Scan(&initialContent, &initialDialogue))
+	require.Equal(t, "question\n[Bash] $ usercommandneedle", initialContent)
+	require.Equal(t, sql.NullString{String: "question", Valid: true}, initialDialogue)
 	require.NoError(t, f.sink.SetPin(t.Context(), "codex:portable", 1, true, "saved note"))
 	var revision string
 	var revisions, outbox int

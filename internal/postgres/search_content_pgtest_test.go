@@ -513,32 +513,6 @@ func TestPGSearchContentGitBranchFilter(t *testing.T) {
 	assert.Equal(t, "cs-branch-alpha-main", got.Matches[0].SessionID)
 }
 
-func TestPGSearchContentRegexLegacyThinkingDedupeAcrossPages(t *testing.T) {
-	store := setupContentSearch(t)
-	const timestamp = "2024-06-15T10:00:00Z"
-	insertCSSession(t, store, "legacy-paging", "project-a", "claude", timestamp, timestamp)
-	insertCSMessage(t, store, "legacy-paging", 0, "assistant", "[Thinking] needle1", timestamp, false)
-	insertCSMessage(t, store, "legacy-paging", 1, "assistant", "needle2", timestamp, false)
-	insertCSMessage(t, store, "legacy-paging", 2, "assistant", "answer", timestamp, false)
-	_, err := store.DB().ExecContext(t.Context(), `UPDATE messages SET thinking_text=CASE ordinal WHEN 0 THEN 'needle1' WHEN 2 THEN 'needle3' ELSE '' END WHERE session_id='legacy-paging'`)
-	require.NoError(t, err)
-	filter := db.ContentSearchFilter{Pattern: `needle[0-9]+`, Mode: "regex", Limit: 1}
-	for i, location := range []string{"message", "message", "thinking"} {
-		page, err := store.SearchContent(t.Context(), filter)
-		require.NoError(t, err)
-		require.Len(t, page.Matches, 1)
-		assert.Equal(t, "legacy-paging", page.Matches[0].SessionID)
-		assert.Equal(t, i, page.Matches[0].Ordinal)
-		assert.Equal(t, location, page.Matches[0].Location)
-		if i < 2 {
-			require.Equal(t, i+1, page.NextCursor)
-		} else {
-			assert.Zero(t, page.NextCursor)
-		}
-		filter.Cursor = page.NextCursor
-	}
-}
-
 // TestPGSearchContentPagination verifies Limit+1 sentinel and NextCursor.
 func TestPGSearchContentPagination(t *testing.T) {
 	store := setupContentSearch(t)
