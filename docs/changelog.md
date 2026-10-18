@@ -26,12 +26,15 @@ The latest release is
   pre-upgrade mirror fail with a schema compatibility error naming
   `messages.dialogue_text` until the first push.
   PostgreSQL performs one full push per scope after upgrading. A `pg serve`
-  mirror reader refuses the upgraded schema until a push from an upgraded
-  machine completes. For hosted servers, first run
+  mirror reader accepts the schema once `messages.dialogue_text` exists.
+  Rows awaiting the full push still search rendered text. For hosted servers,
+  first run
   `GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime`
   as the database owner, then refresh existing uploads with
   `agentsview pg raw-reparse hosted --run-id <id>`.
   Repeat the same run ID until it reports `complete=true`.
+  Keep hosted deployments on this version or newer. Older binaries bypass the
+  data version check and can discard saved dialogue projections.
   Artifact transport is a separate follow-up;
   semantic search continues to use rendered messages.
 

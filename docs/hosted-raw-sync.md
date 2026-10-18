@@ -149,6 +149,9 @@ After upgrading an existing runtime, the owner must apply the
 `UPDATE (dialogue_text)` grant above. The runtime fails startup until it has
 that privilege.
 
+Hosted storage keeps dialogue in both message rows and `recency_state`; signal
+settling reads and rewrites that derived record, including its dialogue text.
+
 Sequence names above are those created by provisioning. For an adopted schema,
 resolve the actual owned sequence with `pg_get_serial_sequence`; serial IDs need
 `USAGE` or `UPDATE`, while identity-generated IDs need no separate sequence
