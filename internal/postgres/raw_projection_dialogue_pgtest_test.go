@@ -12,7 +12,50 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/rawderive"
+	"go.kenn.io/agentsview/internal/rawsync"
 )
+
+func TestRawProjectionDialogueRolloutRequeuesCompletedProductionVersion(t *testing.T) {
+	f := newProjectionFixture(t)
+	const previousVersion = "parser-data-140+friction-v1"
+	const currentVersion = "parser-data-140+friction-v1+dialogue-v1"
+	var err error
+	f.custody, err = rawsync.NewService(f.objects, f.jobs, rawsync.DefaultManifestLimits(), previousVersion)
+	require.NoError(t, err)
+	m, _ := f.accept(t, "device-a", "dialogue-capture", "")
+	_, err = f.sink.SelectSourceGeneration(t.Context(), m, previousVersion)
+	require.NoError(t, err)
+	leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "previous-worker", 1, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, leases, 1)
+	out := projectionOutcome("question")
+	require.NoError(t, f.sink.Project(t.Context(), leases[0], m, out))
+	var state string
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT state FROM raw_ingest_jobs WHERE id=$1`, leases[0].ID).Scan(&state))
+	require.Equal(t, "complete", state)
+
+	// A new run ID at the old production version leaves completed uploads alone.
+	_, err = f.sink.ScheduleCurrentHeads(t.Context(), "previous-version", previousVersion, 64)
+	require.NoError(t, err)
+	leases, err = f.jobs.ClaimRawParseJobs(t.Context(), "reparse-worker", 1, time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, leases)
+
+	_, err = f.sink.ScheduleCurrentHeads(t.Context(), "dialogue-upgrade", currentVersion, 64)
+	require.NoError(t, err)
+	leases, err = f.jobs.ClaimRawParseJobs(t.Context(), "reparse-worker", 1, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, leases, 1)
+	assert.Equal(t, m.ManifestID, leases[0].ManifestID)
+	assert.Equal(t, currentVersion, leases[0].ProcessingVersion)
+	out.Outcome.Results[0].Result.Messages[1].DialogueText = new("")
+	require.NoError(t, f.sink.Project(t.Context(), leases[0], m, out))
+	resolved, err := f.sink.Resolve(t.Context(), "codex:portable")
+	require.NoError(t, err)
+	var dialogue sql.NullString
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT dialogue_text FROM messages WHERE session_id=$1 AND ordinal=1`, resolved.SessionID).Scan(&dialogue))
+	assert.Equal(t, sql.NullString{Valid: true}, dialogue)
+}
 
 func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	f := newProjectionFixture(t)
