@@ -1267,6 +1267,13 @@ func createContentSearchIndexesPG(ctx context.Context, db *sql.DB) {
 	)); err != nil {
 		log.Printf("pg schema: creating messages dialogue trigram index failed: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(
+		`CREATE INDEX IF NOT EXISTS idx_messages_thinking_trgm
+         ON messages USING gin (thinking_text %s.gin_trgm_ops)
+         WITH (fastupdate = off)`, quotedExt,
+	)); err != nil {
+		log.Printf("pg schema: creating messages thinking trigram index failed: %v", err)
+	}
 	// CREATE INDEX IF NOT EXISTS only applies WITH (fastupdate = off) on
 	// first creation. Re-apply on every boot so stores upgraded from a
 	// prior schema (which left fastupdate=on) also get the bounded index.
