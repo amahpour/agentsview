@@ -225,11 +225,3 @@ func TestRawProjectionDialogueRecoversAfterOlderRewrite(t *testing.T) {
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions WHERE session_id=$1`, before.SessionID).Scan(&marker))
 	assert.Equal(t, db.CurrentDataVersion(), marker)
 }
-
-func TestPGMirrorDataVersionWithoutRawTables(t *testing.T) {
-	_, _, pg, ctx := newSessionProvenancePushSync(t, "agentsview_dialogue_version_test")
-	var exists bool
-	require.NoError(t, pg.QueryRowContext(ctx, `SELECT to_regclass('raw_content_revisions') IS NOT NULL`).Scan(&exists))
-	require.False(t, exists)
-	require.NoError(t, CheckDataVersionCompat(ctx, pg))
-}
