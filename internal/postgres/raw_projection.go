@@ -229,13 +229,19 @@ func (s *RawProjectionStore) Project(ctx context.Context, lease rawderive.JobLea
 			return err
 		}
 		if count == 0 {
-			dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages)
+			physical, err := rawPhysicalExists(ctx, tx, sessionID)
 			if err != nil {
 				return err
 			}
-			derivedChanged = derivedChanged || dialogueChanged
+			if physical {
+				dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages)
+				if err != nil {
+					return err
+				}
+				derivedChanged = derivedChanged || dialogueChanged
+			}
 		}
-		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals)
+		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals, prepared.Messages)
 		if err != nil {
 			return err
 		}
@@ -373,7 +379,7 @@ func loadRawPayload(ctx context.Context, tx *sql.Tx, id string) (ingest.Prepared
 		if err != nil {
 			return p, err
 		}
-		state.apply(&p.Signals)
+		state.apply(&p)
 	}
 	return p, nil
 }

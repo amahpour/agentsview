@@ -187,7 +187,7 @@ func (s *RawProjectionStore) refreshStaleRawFriction(
 
 // refreshRawDialogue runs under Project's group locks and lease fence. Dialogue
 // does not change content identity or embeddings, so repair physical rows even
-// when the saved payload already contains the current projection. It reports
+// when the derived state already contains the current projection. It reports
 // whether physical rows changed so the caller can publish the corpus revision.
 func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message) (bool, error) {
 	dialogue := make(map[int]*string, len(messages))
@@ -233,31 +233,7 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 			return false, err
 		}
 	}
-	saved, err := loadRawPayload(ctx, tx, id)
-	if err != nil {
-		return false, err
-	}
-	changed := false
-	for i := range saved.Messages {
-		m := &saved.Messages[i]
-		wanted, exists := dialogue[m.Ordinal]
-		if !exists {
-			continue
-		}
-		if (m.DialogueText == nil) != (wanted == nil) || wanted != nil && *m.DialogueText != *wanted {
-			m.DialogueText = wanted
-			changed = true
-		}
-	}
-	if !changed {
-		return len(ordinals) > 0, nil
-	}
-	payload, err := encodeRawPayload(saved)
-	if err != nil {
-		return false, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE raw_content_revisions SET payload=$2 WHERE session_id=$1`, id, payload)
-	return len(ordinals) > 0, err
+	return len(ordinals) > 0, nil
 }
 
 func (s *RawProjectionStore) writePayload(ctx context.Context, tx *sql.Tx, id, group, revision string, p ingest.PreparedSession) error {

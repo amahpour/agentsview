@@ -9,7 +9,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 
 	"go.kenn.io/agentsview/internal/db"
@@ -48,43 +47,15 @@ func rawBaseAlias(m rawsync.CanonicalManifest, s db.Session) string {
 }
 
 func encodeRawPayload(p ingest.PreparedSession) ([]byte, error) {
-	// Gob omits empty string pointers. Keep their ordinals in a trailing value
-	// so older readers can still decode the prepared session unchanged.
-	var emptyOrdinals []int
-	for _, m := range p.Messages {
-		if m.DialogueText != nil && *m.DialogueText == "" {
-			emptyOrdinals = append(emptyOrdinals, m.Ordinal)
-		}
-	}
 	var b bytes.Buffer
-	enc := gob.NewEncoder(&b)
-	if err := enc.Encode(p); err != nil {
-		return nil, err
-	}
-	err := enc.Encode(emptyOrdinals)
+	err := gob.NewEncoder(&b).Encode(p)
 	return b.Bytes(), err
 }
 
 func decodeRawPayload(b []byte) (ingest.PreparedSession, error) {
-	var payload ingest.PreparedSession
-	dec := gob.NewDecoder(bytes.NewReader(b))
-	if err := dec.Decode(&payload); err != nil {
-		return ingest.PreparedSession{}, err
-	}
-	var emptyOrdinals []int
-	if err := dec.Decode(&emptyOrdinals); err != nil && !errors.Is(err, io.EOF) {
-		return ingest.PreparedSession{}, err
-	}
-	empty := make(map[int]bool, len(emptyOrdinals))
-	for _, ordinal := range emptyOrdinals {
-		empty[ordinal] = true
-	}
-	for i := range payload.Messages {
-		if empty[payload.Messages[i].Ordinal] {
-			payload.Messages[i].DialogueText = new("")
-		}
-	}
-	return payload, nil
+	var p ingest.PreparedSession
+	err := gob.NewDecoder(bytes.NewReader(b)).Decode(&p)
+	return p, err
 }
 
 // rawContentRevision hashes a versioned structural representation of every
