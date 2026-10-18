@@ -9,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 
 	"go.kenn.io/agentsview/internal/db"
@@ -46,44 +47,36 @@ func rawBaseAlias(m rawsync.CanonicalManifest, s db.Session) string {
 	return s.ID
 }
 
-// rawSessionPayload keeps the prepared fields at their existing gob names.
-// Gob flattens *string values and omits empty strings, so classified empty
-// dialogue needs its own ordinal list to survive materialization from payload.
-type rawSessionPayload struct {
-	Session               db.Session
-	Messages              []db.Message
-	UsageEvents           []db.UsageEvent
-	PlanUsage             *db.SessionPlanUsage
-	Signals               db.SessionSignalUpdate
-	Findings              []db.SecretFinding
-	Friction              db.SessionFrictionUpdate
-	Validation            db.ValidationStats
-	EmptyDialogueOrdinals []int
-}
-
 func encodeRawPayload(p ingest.PreparedSession) ([]byte, error) {
-	payload := rawSessionPayload{
-		Session: p.Session, Messages: p.Messages, UsageEvents: p.UsageEvents,
-		PlanUsage: p.PlanUsage, Signals: p.Signals, Findings: p.Findings,
-		Friction: p.Friction, Validation: p.Validation,
-	}
+	// Gob omits empty string pointers. Keep their ordinals in a trailing value
+	// so older readers can still decode the prepared session unchanged.
+	var emptyOrdinals []int
 	for _, m := range p.Messages {
 		if m.DialogueText != nil && *m.DialogueText == "" {
-			payload.EmptyDialogueOrdinals = append(payload.EmptyDialogueOrdinals, m.Ordinal)
+			emptyOrdinals = append(emptyOrdinals, m.Ordinal)
 		}
 	}
 	var b bytes.Buffer
-	err := gob.NewEncoder(&b).Encode(payload)
+	enc := gob.NewEncoder(&b)
+	if err := enc.Encode(p); err != nil {
+		return nil, err
+	}
+	err := enc.Encode(emptyOrdinals)
 	return b.Bytes(), err
 }
 
 func decodeRawPayload(b []byte) (ingest.PreparedSession, error) {
-	var payload rawSessionPayload
-	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&payload); err != nil {
+	var payload ingest.PreparedSession
+	dec := gob.NewDecoder(bytes.NewReader(b))
+	if err := dec.Decode(&payload); err != nil {
 		return ingest.PreparedSession{}, err
 	}
-	empty := make(map[int]bool, len(payload.EmptyDialogueOrdinals))
-	for _, ordinal := range payload.EmptyDialogueOrdinals {
+	var emptyOrdinals []int
+	if err := dec.Decode(&emptyOrdinals); err != nil && err != io.EOF {
+		return ingest.PreparedSession{}, err
+	}
+	empty := make(map[int]bool, len(emptyOrdinals))
+	for _, ordinal := range emptyOrdinals {
 		empty[ordinal] = true
 	}
 	for i := range payload.Messages {
@@ -91,11 +84,7 @@ func decodeRawPayload(b []byte) (ingest.PreparedSession, error) {
 			payload.Messages[i].DialogueText = new("")
 		}
 	}
-	return ingest.PreparedSession{
-		Session: payload.Session, Messages: payload.Messages, UsageEvents: payload.UsageEvents,
-		PlanUsage: payload.PlanUsage, Signals: payload.Signals, Findings: payload.Findings,
-		Friction: payload.Friction, Validation: payload.Validation,
-	}, nil
+	return payload, nil
 }
 
 // rawContentRevision hashes a versioned structural representation of every
