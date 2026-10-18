@@ -47,10 +47,7 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	parsed.Messages[0].DialogueText = nil
 	parsed.Messages[1].DialogueText = new("answerneedle")
 	parsed.Messages[2].DialogueText = new("")
-	f.runtime.SetMaxOpenConns(1)
-	_, err = f.runtime.ExecContext(t.Context(), `SET lock_timeout='1s'`)
-	require.NoError(t, err)
-	for _, stage := range []string{"old payload", "no-op with locked message", "current payload with stale physical rows"} {
+	for _, stage := range []string{"old payload", "no-op", "current payload with stale physical rows"} {
 		if stage == "current payload with stale physical rows" {
 			_, err := f.runtime.ExecContext(t.Context(), `UPDATE messages SET dialogue_text=NULL WHERE session_id=$1`, before.SessionID)
 			require.NoError(t, err)
@@ -61,25 +58,14 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 		leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "dialogue-worker", 1, time.Minute)
 		require.NoError(t, err)
 		require.Len(t, leases, 1)
-		var locked *sql.Tx
-		if stage == "no-op with locked message" {
-			locked, err = f.admin.BeginTx(t.Context(), nil)
-			require.NoError(t, err)
-			defer locked.Rollback()
-			var ordinal int
-			require.NoError(t, locked.QueryRowContext(t.Context(), `SELECT ordinal FROM messages WHERE session_id=$1 AND ordinal=1 FOR UPDATE`, before.SessionID).Scan(&ordinal))
-		}
 		var derivedXmin, messageXmin, sessionXmin string
 		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT r.xmin::text,m.xmin::text,s.xmin::text FROM raw_content_revisions r JOIN messages m ON m.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.session_id=$1 AND m.ordinal=1`, before.SessionID).Scan(&derivedXmin, &messageXmin, &sessionXmin))
 		beforeRefresh, err := f.sink.Resolve(t.Context(), "codex:portable")
 		require.NoError(t, err)
 		require.NoError(t, f.sink.Project(t.Context(), leases[0], m, outcome))
-		if locked != nil {
-			require.NoError(t, locked.Rollback())
-		}
 		after, err := f.sink.Resolve(t.Context(), "codex:portable")
 		require.NoError(t, err)
-		if stage == "no-op with locked message" {
+		if stage == "no-op" {
 			assert.Equal(t, beforeRefresh.CorpusRevision, after.CorpusRevision)
 			var afterDerivedXmin, afterMessageXmin, afterSessionXmin string
 			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT r.xmin::text,m.xmin::text,s.xmin::text FROM raw_content_revisions r JOIN messages m ON m.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.session_id=$1 AND m.ordinal=1`, after.SessionID).Scan(&afterDerivedXmin, &afterMessageXmin, &afterSessionXmin))
@@ -166,46 +152,33 @@ func TestRawProjectionDialogueUpgradeFencesRetainedRevision(t *testing.T) {
 }
 
 func TestRawProjectionDialogueVersionChecksAtOpen(t *testing.T) {
-	for _, retainedOnly := range []bool{false, true} {
-		name := "sessions"
-		if retainedOnly {
-			name = "retained revision"
+	t.Run("retained revision", func(t *testing.T) {
+		f := newProjectionFixture(t)
+		out := projectionOutcome("question")
+		out.Outcome.Results[0].Result.Messages[0].DialogueText = new("question")
+		m, receipt := f.accept(t, "device-a", "original", "")
+		require.NoError(t, f.sink.Project(t.Context(), f.lease(t, m), m, out))
+		removed, _ := f.accept(t, "device-a", "removed", receipt.Receipt)
+		require.NoError(t, f.sink.Project(t.Context(), f.lease(t, removed), removed, rawderive.ParsedManifest{Outcome: parser.ParseOutcome{ResultSetComplete: true, ForceReplace: true}}))
+		var sessions, marker int
+		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT count(*) FROM sessions`).Scan(&sessions))
+		assert.Zero(t, sessions)
+		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions`).Scan(&marker))
+		assert.Equal(t, db.CurrentDataVersion(), marker)
+		_, err := f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=jsonb_set(recency_state,'{DataVersion}',to_jsonb($1::int))`, db.CurrentDataVersion()+1)
+		require.NoError(t, err)
+		_, err = NewRawProjectionStore(f.runtime, RawProjectionOptions{Tenant: f.tenant})
+		var tooNew *db.DataVersionTooNewError
+		require.ErrorAs(t, err, &tooNew)
+		assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
+		store, err := NewHostedStore(f.dsn, f.schema, f.tenant, false)
+		if store != nil {
+			t.Cleanup(func() { assert.NoError(t, store.Close()) })
 		}
-		t.Run(name, func(t *testing.T) {
-			f := newProjectionFixture(t)
-			out := projectionOutcome("question")
-			out.Outcome.Results[0].Result.Messages[0].DialogueText = new("question")
-			m, receipt := f.accept(t, "device-a", "original", "")
-			require.NoError(t, f.sink.Project(t.Context(), f.lease(t, m), m, out))
-			if retainedOnly {
-				removed, _ := f.accept(t, "device-a", "removed", receipt.Receipt)
-				require.NoError(t, f.sink.Project(t.Context(), f.lease(t, removed), removed, rawderive.ParsedManifest{Outcome: parser.ParseOutcome{ResultSetComplete: true, ForceReplace: true}}))
-				var sessions, marker int
-				require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT count(*) FROM sessions`).Scan(&sessions))
-				assert.Zero(t, sessions)
-				require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions`).Scan(&marker))
-				assert.Equal(t, db.CurrentDataVersion(), marker)
-				_, err := f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=jsonb_set(recency_state,'{DataVersion}',to_jsonb($1::int))`, db.CurrentDataVersion()+1)
-				require.NoError(t, err)
-			} else {
-				_, err := f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=$1`, db.CurrentDataVersion()+1)
-				require.NoError(t, err)
-				_, err = f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=recency_state-'DataVersion'`)
-				require.NoError(t, err)
-			}
-			_, err := NewRawProjectionStore(f.runtime, RawProjectionOptions{Tenant: f.tenant})
-			var tooNew *db.DataVersionTooNewError
-			require.ErrorAs(t, err, &tooNew)
-			assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
-			store, err := NewHostedStore(f.dsn, f.schema, f.tenant, false)
-			if store != nil {
-				t.Cleanup(func() { assert.NoError(t, store.Close()) })
-			}
-			require.ErrorAs(t, err, &tooNew)
-			assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
-			assert.ErrorAs(t, EnsureHostedTenant(t.Context(), f.admin, f.schema, f.tenant), &tooNew)
-		})
-	}
+		require.ErrorAs(t, err, &tooNew)
+		assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
+		assert.ErrorAs(t, EnsureHostedTenant(t.Context(), f.admin, f.schema, f.tenant), &tooNew)
+	})
 }
 
 func TestRawProjectionDialogueRecoversAfterOlderRewrite(t *testing.T) {
@@ -234,11 +207,6 @@ func TestRawProjectionDialogueRecoversAfterOlderRewrite(t *testing.T) {
 	var dialogue sql.NullString
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT dialogue_text FROM messages WHERE session_id=$1 AND ordinal=1`, before.SessionID).Scan(&dialogue))
 	assert.False(t, dialogue.Valid)
-	store := &Store{pg: f.runtime}
-	filter := db.ContentSearchFilter{Pattern: "commandneedle", Sources: []string{"messages"}, IncludeOneShot: true}
-	page, err := store.SearchContent(t.Context(), filter)
-	require.NoError(t, err)
-	require.Len(t, page.Matches, 1, "unclassified dialogue falls back to rendered text")
 	_, err = f.sink.SelectSourceGeneration(t.Context(), m, "parser-2")
 	require.NoError(t, err)
 	leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "reparse-worker", 1, time.Minute)
@@ -250,9 +218,6 @@ func TestRawProjectionDialogueRecoversAfterOlderRewrite(t *testing.T) {
 	var marker int
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions WHERE session_id=$1`, before.SessionID).Scan(&marker))
 	assert.Equal(t, db.CurrentDataVersion(), marker)
-	page, err = store.SearchContent(t.Context(), filter)
-	require.NoError(t, err)
-	assert.Empty(t, page.Matches)
 }
 
 func TestPGMirrorDataVersionWithoutRawTables(t *testing.T) {

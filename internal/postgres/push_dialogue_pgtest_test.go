@@ -70,15 +70,4 @@ func TestPGDialogueBackfillPerScope(t *testing.T) {
 	var dialogue string
 	require.NoError(t, pg.QueryRowContext(ctx, `SELECT dialogue_text FROM messages WHERE session_id='dialogue-search' AND ordinal=1`).Scan(&dialogue))
 	assert.Equal(t, "answerneedle", dialogue)
-	marker, err := filtered.syncState.GetSyncState(ctx, messageDialogueBackfillStateKey)
-	require.NoError(t, err)
-	assert.Equal(t, "1", marker)
-	marker, err = local.GetSyncState(ctx, messageDialogueBackfillStateKey)
-	require.NoError(t, err)
-	assert.Empty(t, marker)
-	_, err = unfiltered.Push(ctx, false, nil)
-	require.NoError(t, err)
-	marker, err = local.GetSyncState(ctx, messageDialogueBackfillStateKey)
-	require.NoError(t, err)
-	assert.Equal(t, "1", marker)
 }

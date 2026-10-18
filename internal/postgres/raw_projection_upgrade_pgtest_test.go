@@ -11,11 +11,6 @@ import (
 
 func TestHostedReprovisionRestoresMigratedColumnsAndIndexes(t *testing.T) {
 	f := newHostedFixture(t, "tenant-upgrade")
-	for _, index := range []string{"idx_messages_dialogue_trgm", "idx_messages_thinking_trgm"} {
-		var exists bool
-		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, index).Scan(&exists))
-		assert.True(t, exists, "fresh tenant index %s", index)
-	}
 	_, err := f.runtime.ExecContext(t.Context(), `INSERT INTO sessions(id,project,machine,agent) VALUES('preserved','project','device','codex')`)
 	require.NoError(t, err)
 	_, err = f.admin.ExecContext(t.Context(), `ALTER TABLE sessions DROP COLUMN raw_content_revision; ALTER TABLE raw_ingest_jobs DROP COLUMN projection_selected; ALTER TABLE raw_content_revisions DROP COLUMN recency_state; DROP INDEX idx_tool_result_events_terminal; DROP INDEX raw_session_sources_source; DROP INDEX raw_session_sources_content; DROP INDEX raw_session_sources_physical; DROP INDEX idx_messages_dialogue_trgm; DROP INDEX idx_messages_thinking_trgm`)

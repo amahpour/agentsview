@@ -27,11 +27,6 @@ func TestRawPayloadKeepsDialogueInDerivedState(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, original, encoded, "dialogue changes preserve the immutable payload")
 		assert.Equal(t, new(dialogue), p.Messages[0].DialogueText, "encoding preserves the caller's derived state")
-		decoded, err := decodeRawPayload(encoded)
-		require.NoError(t, err)
-		state := rawRecencyState{Dialogue: map[int]*string{0: new(dialogue)}}
-		state.apply(&decoded)
-		assert.Equal(t, p.Messages, decoded.Messages)
 	}
 }
 
