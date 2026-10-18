@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,17 +13,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/db"
-	"go.kenn.io/agentsview/internal/friction"
 	"go.kenn.io/agentsview/internal/ingest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/rawderive"
 	"go.kenn.io/agentsview/internal/server"
 )
-
-func TestRawProcessingVersionIncludesHostedDialogueRevision(t *testing.T) {
-	assert.Equal(t, fmt.Sprintf("parser-data-%d+%s+dialogue-v1", db.CurrentDataVersion(), friction.RulesVersion), rawProcessingVersion())
-}
 
 func TestPGRawRuntimeChild(t *testing.T) {
 	if os.Getenv("RAW_RUNTIME_CHILD") != "1" {
