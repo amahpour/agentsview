@@ -229,7 +229,7 @@ func (s *RawProjectionStore) Project(ctx context.Context, lease rawderive.JobLea
 			return err
 		}
 		if count == 0 {
-			if err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages); err != nil {
+			if err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages, payload); err != nil {
 				return err
 			}
 		}

@@ -38,9 +38,12 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	// An older saved payload and physical rows both lack the projection.
 	parsed.Messages[1].DialogueText = new("answerneedle")
 	parsed.Messages[2].DialogueText = new("")
-	for _, stage := range []string{"old payload", "current payload with stale physical rows"} {
+	f.runtime.SetMaxOpenConns(1)
+	_, err = f.runtime.ExecContext(t.Context(), `SET lock_timeout='1s'`)
+	require.NoError(t, err)
+	for _, stage := range []string{"old payload", "no-op with locked message", "current payload with stale physical rows"} {
 		t.Run(stage, func(t *testing.T) {
-			if stage != "old payload" {
+			if stage == "current payload with stale physical rows" {
 				_, err := f.runtime.ExecContext(t.Context(), `UPDATE messages SET dialogue_text=NULL WHERE session_id=$1`, before.SessionID)
 				require.NoError(t, err)
 			}
@@ -50,6 +53,13 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 			leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "dialogue-worker", 1, time.Minute)
 			require.NoError(t, err)
 			require.Len(t, leases, 1)
+			if stage == "no-op with locked message" {
+				locked, err := f.admin.BeginTx(t.Context(), nil)
+				require.NoError(t, err)
+				defer locked.Rollback()
+				var ordinal int
+				require.NoError(t, locked.QueryRowContext(t.Context(), `SELECT ordinal FROM messages WHERE session_id=$1 AND ordinal=1 FOR UPDATE`, before.SessionID).Scan(&ordinal))
+			}
 			require.NoError(t, f.sink.Project(t.Context(), leases[0], m, outcome))
 			after, err := f.sink.Resolve(t.Context(), "codex:portable")
 			require.NoError(t, err)
