@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role           TEXT NOT NULL,
     content        TEXT NOT NULL,
     thinking_text  TEXT NOT NULL DEFAULT '',
+    dialogue_text  TEXT,
     timestamp      TIMESTAMPTZ,
     has_thinking   BOOLEAN NOT NULL DEFAULT FALSE,
     has_tool_use   BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1259,6 +1260,13 @@ func createContentSearchIndexesPG(ctx context.Context, db *sql.DB) {
 		)
 		return
 	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(
+		`CREATE INDEX IF NOT EXISTS idx_messages_dialogue_trgm
+         ON messages USING gin ((COALESCE(dialogue_text, content)) %s.gin_trgm_ops)
+         WITH (fastupdate = off)`, quotedExt,
+	)); err != nil {
+		log.Printf("pg schema: creating messages dialogue trigram index failed: %v", err)
+	}
 	// CREATE INDEX IF NOT EXISTS only applies WITH (fastupdate = off) on
 	// first creation. Re-apply on every boot so stores upgraded from a
 	// prior schema (which left fastupdate=on) also get the bounded index.
@@ -2186,7 +2194,7 @@ func CheckSchemaCompat(
 	}
 
 	_, err = db.ExecContext(ctx,
-		`SELECT session_id, ordinal, role, content, thinking_text,
+		`SELECT session_id, ordinal, role, content, thinking_text, dialogue_text,
 			timestamp, has_thinking, has_tool_use,
 			content_length, is_system, model, reasoning_effort, token_usage,
 			context_tokens, output_tokens, provider_id,
