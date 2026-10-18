@@ -314,8 +314,7 @@ func (db *DB) MessageDialogueFingerprints(ctx context.Context, sessionIDs []stri
 			if err := rows.Scan(&id, &ordinal, &dialogue); err != nil {
 				return err
 			}
-			sum := sha256.Sum256([]byte(SanitizeUTF8(dialogue)))
-			fmt.Fprintf(builders.get(id), "%d|%x;", ordinal, sum)
+			EncodeMessageDialogueFingerprint(builders.get(id), ordinal, dialogue)
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -327,6 +326,13 @@ func (db *DB) MessageDialogueFingerprints(ctx context.Context, sessionIDs []stri
 		return nil, err
 	}
 	return out, nil
+}
+
+// EncodeMessageDialogueFingerprint appends one classified message's record.
+// Callers omit unclassified messages and encode records in ordinal order.
+func EncodeMessageDialogueFingerprint(b *strings.Builder, ordinal int, dialogue string) {
+	sum := sha256.Sum256([]byte(SanitizeUTF8(dialogue)))
+	fmt.Fprintf(b, "%d|%x;", ordinal, sum)
 }
 
 // SystemMessageFingerprints is the batched twin of SystemMessageFingerprint.

@@ -1129,8 +1129,7 @@ func loadPushMessageDialogueFingerprints(ctx context.Context, tx *sql.Tx, sessio
 			b = &strings.Builder{}
 			builders[id] = b
 		}
-		sum := sha256.Sum256([]byte(db.SanitizeUTF8(dialogue)))
-		fmt.Fprintf(b, "%d|%x;", ordinal, sum)
+		db.EncodeMessageDialogueFingerprint(b, ordinal, dialogue)
 	}
 	if err := rows.Err(); err != nil {
 		return err
