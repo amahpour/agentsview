@@ -25,8 +25,12 @@ The latest release is
   sessions without dialogue, and needs schema permissions. Reads from either
   pre-upgrade mirror fail with a schema compatibility error naming
   `messages.dialogue_text` until the first push.
-  PostgreSQL performs one full push per scope after upgrading; hosted servers
-  refresh existing uploads with `agentsview pg raw-reparse hosted --run-id <id>`.
+  PostgreSQL performs one full push per scope after upgrading. A `pg serve`
+  mirror reader refuses the upgraded schema until a push from an upgraded
+  machine completes. For hosted servers, first run
+  `GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime`
+  as the database owner, then refresh existing uploads with
+  `agentsview pg raw-reparse hosted --run-id <id>`.
   Repeat the same run ID until it reports `complete=true`.
   Artifact transport is a separate follow-up;
   semantic search continues to use rendered messages.
