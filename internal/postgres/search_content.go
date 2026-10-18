@@ -67,9 +67,6 @@ func (s *Store) SearchContent(
 	case "", "substring":
 		return s.searchContentSubstringPG(ctx, f)
 	case "fts":
-		if pgHasSource(f, "thinking") {
-			return db.ContentSearchPage{}, &db.SearchInputError{Msg: "search: fts supports messages only"}
-		}
 		f.Sources = []string{"messages"}
 		return s.searchContentSubstringPG(ctx, f)
 	case "regex":
@@ -393,8 +390,7 @@ func (s *Store) searchContentRegexPG(
 
 	out := make([]db.ContentMatch, 0)
 	seen := 0
-	lastMessage := db.MessageRef{}
-	haveMessage := false
+	var dedupe db.LegacyThinkingDedupe
 	for rows.Next() {
 		var m db.ContentMatch
 		var body string
@@ -415,10 +411,7 @@ func (s *Store) searchContentRegexPG(
 		if loc == nil {
 			continue
 		}
-		ref := db.MessageRef{SessionID: m.SessionID, Ordinal: m.Ordinal}
-		if m.Location == "message" {
-			lastMessage, haveMessage = ref, true
-		} else if m.Location == "thinking" && legacyThinking && haveMessage && lastMessage == ref {
+		if dedupe.Suppress(m, legacyThinking) {
 			continue
 		}
 		if seen < f.Cursor {

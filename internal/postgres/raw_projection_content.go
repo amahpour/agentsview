@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/ingest"
@@ -47,6 +48,11 @@ func rawBaseAlias(m rawsync.CanonicalManifest, s db.Session) string {
 }
 
 func encodeRawPayload(p ingest.PreparedSession) ([]byte, error) {
+	// Dialogue belongs to mutable derived state, outside immutable content.
+	p.Messages = slices.Clone(p.Messages)
+	for i := range p.Messages {
+		p.Messages[i].DialogueText = nil
+	}
 	var b bytes.Buffer
 	err := gob.NewEncoder(&b).Encode(p)
 	return b.Bytes(), err
