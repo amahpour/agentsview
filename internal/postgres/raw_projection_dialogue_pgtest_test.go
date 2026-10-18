@@ -14,6 +14,8 @@ import (
 
 func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	f := newProjectionFixture(t)
+	_, grantErr := f.admin.Exec(`REVOKE UPDATE ON messages FROM "` + f.role + `"; GRANT UPDATE(dialogue_text) ON messages TO "` + f.role + `"`)
+	require.NoError(t, grantErr)
 	m, _ := f.accept(t, "device-a", "dialogue-capture", "")
 	outcome := projectionOutcome("question")
 	const rendered = "[Thinking]\nreasonneedle\n[/Thinking]\nanswerneedle\n[Bash] $ commandneedle"

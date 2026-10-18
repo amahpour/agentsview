@@ -336,6 +336,9 @@ func TestHostedRuntimeAcceptsOnlyRequiredProjectionMutations(t *testing.T) {
 	}
 	_, err = f.admin.Exec(`REVOKE USAGE ON SEQUENCE secret_findings_id_seq FROM "` + f.role + `"`)
 	require.NoError(t, err)
+	require.ErrorContains(t, CheckHostedRuntimeWritable(t.Context(), f.runtime, f.schema, config.ArchiveContentFull), "messages.dialogue_text")
+	_, err = f.admin.Exec(`GRANT UPDATE(dialogue_text) ON messages TO "` + f.role + `"`)
+	require.NoError(t, err)
 	require.NoError(t, CheckHostedRuntimeWritable(t.Context(), f.runtime, f.schema, config.ArchiveContentFull))
 	m, receipt := f.accept(t, "device-a", "first", "")
 	out := projectionOutcome("first")
