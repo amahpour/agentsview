@@ -810,8 +810,9 @@ while preserving literal marker text in dialogue. These parsers store reasoning
 blocks in `thinking_text`, including Cursor JSONL and OpenHands. Substring and
 regex searches on SQLite, PostgreSQL, DuckDB, and ClickHouse include `thinking` by default;
 use `--in messages` for dialogue alone or `--in thinking` for reasoning alone.
-FTS, terms, semantic, and hybrid reject `thinking` as a source. Semantic search
-continues to embed full message text; hybrid's keyword search uses dialogue.
+FTS searches messages only. Terms, semantic, and hybrid reject `thinking` as a
+source. Semantic search continues to embed full message text; hybrid's keyword
+search uses dialogue.
 Ordinary session search and the command palette continue to search the full
 rendered transcript.
 
