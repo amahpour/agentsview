@@ -270,7 +270,7 @@ func (s *Sync) pushWithOptions(
 		noteFull("backfilling session provenance")
 	}
 	var transcriptRevisionBackfillNeeded bool
-	full, transcriptRevisionBackfillNeeded, err = applyTranscriptRevisionBackfillRequirement(ctx, state, full)
+	full, transcriptRevisionBackfillNeeded, err = applyBackfillRequirement(ctx, state, transcriptRevisionBackfillStateKey, full)
 	if err != nil {
 		return result, err
 	}
@@ -281,7 +281,7 @@ func (s *Sync) pushWithOptions(
 		noteFull("backfilling transcript revisions")
 	}
 	var messageDialogueBackfillNeeded bool
-	full, messageDialogueBackfillNeeded, err = applyMessageDialogueBackfillRequirement(ctx, state, full)
+	full, messageDialogueBackfillNeeded, err = applyBackfillRequirement(ctx, state, messageDialogueBackfillStateKey, full)
 	if err != nil {
 		return result, err
 	}
@@ -641,12 +641,12 @@ func (s *Sync) pushWithOptions(
 		); err != nil {
 			return result, err
 		}
-		if err := completeTranscriptRevisionBackfill(ctx,
-			state, transcriptRevisionBackfillNeeded, result,
+		if err := completeBackfill(ctx,
+			state, transcriptRevisionBackfillStateKey, transcriptRevisionBackfillNeeded, result,
 		); err != nil {
 			return result, err
 		}
-		if err := completeMessageDialogueBackfill(ctx, state, messageDialogueBackfillNeeded, result); err != nil {
+		if err := completeBackfill(ctx, state, messageDialogueBackfillStateKey, messageDialogueBackfillNeeded, result); err != nil {
 			return result, err
 		}
 		if err := completeTimestampNormalizationBackfill(ctx,
@@ -794,12 +794,12 @@ func (s *Sync) pushWithOptions(
 	); err != nil {
 		return result, err
 	}
-	if err := completeTranscriptRevisionBackfill(ctx,
-		state, transcriptRevisionBackfillNeeded, result,
+	if err := completeBackfill(ctx,
+		state, transcriptRevisionBackfillStateKey, transcriptRevisionBackfillNeeded, result,
 	); err != nil {
 		return result, err
 	}
-	if err := completeMessageDialogueBackfill(ctx, state, messageDialogueBackfillNeeded, result); err != nil {
+	if err := completeBackfill(ctx, state, messageDialogueBackfillStateKey, messageDialogueBackfillNeeded, result); err != nil {
 		return result, err
 	}
 	if err := completeTimestampNormalizationBackfill(ctx,
@@ -1753,13 +1753,13 @@ func completeSessionProvenanceBackfill(ctx context.Context,
 	return markSessionProvenanceBackfillDone(ctx, local)
 }
 
-func applyTranscriptRevisionBackfillRequirement(ctx context.Context,
-	local syncStateStore, full bool,
+func applyBackfillRequirement(ctx context.Context,
+	local syncStateStore, key string, full bool,
 ) (bool, bool, error) {
-	done, err := local.GetSyncState(ctx, transcriptRevisionBackfillStateKey)
+	done, err := local.GetSyncState(ctx, key)
 	if err != nil {
 		return full, false, fmt.Errorf(
-			"reading %s: %w", transcriptRevisionBackfillStateKey, err,
+			"reading %s: %w", key, err,
 		)
 	}
 	if done == "1" {
@@ -1768,59 +1768,24 @@ func applyTranscriptRevisionBackfillRequirement(ctx context.Context,
 	return true, true, nil
 }
 
-func markTranscriptRevisionBackfillDone(ctx context.Context, local syncStateStore) error {
+func markBackfillDone(ctx context.Context, local syncStateStore, key string) error {
 	if err := local.SetSyncState(ctx,
-		transcriptRevisionBackfillStateKey, "1",
+		key, "1",
 	); err != nil {
 		return fmt.Errorf(
-			"updating %s: %w", transcriptRevisionBackfillStateKey, err,
+			"updating %s: %w", key, err,
 		)
 	}
 	return nil
 }
 
-func completeTranscriptRevisionBackfill(ctx context.Context,
-	local syncStateStore, needed bool, result storage.PushResult,
+func completeBackfill(ctx context.Context,
+	local syncStateStore, key string, needed bool, result storage.PushResult,
 ) error {
 	if !needed || result.Errors > 0 {
 		return nil
 	}
-	return markTranscriptRevisionBackfillDone(ctx, local)
-}
-
-func applyMessageDialogueBackfillRequirement(ctx context.Context,
-	local syncStateStore, full bool,
-) (bool, bool, error) {
-	done, err := local.GetSyncState(ctx, messageDialogueBackfillStateKey)
-	if err != nil {
-		return full, false, fmt.Errorf(
-			"reading %s: %w", messageDialogueBackfillStateKey, err,
-		)
-	}
-	if done == "1" {
-		return full, false, nil
-	}
-	return true, true, nil
-}
-
-func markMessageDialogueBackfillDone(ctx context.Context, local syncStateStore) error {
-	if err := local.SetSyncState(ctx,
-		messageDialogueBackfillStateKey, "1",
-	); err != nil {
-		return fmt.Errorf(
-			"updating %s: %w", messageDialogueBackfillStateKey, err,
-		)
-	}
-	return nil
-}
-
-func completeMessageDialogueBackfill(ctx context.Context,
-	local syncStateStore, needed bool, result storage.PushResult,
-) error {
-	if !needed || result.Errors > 0 {
-		return nil
-	}
-	return markMessageDialogueBackfillDone(ctx, local)
+	return markBackfillDone(ctx, local, key)
 }
 
 func applyTimestampNormalizationBackfillRequirement(ctx context.Context,
