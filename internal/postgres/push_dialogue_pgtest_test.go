@@ -55,7 +55,7 @@ func TestPGPushRepushesDialogueOnlyChanges(t *testing.T) {
 func TestPGDialogueBackfillPerScope(t *testing.T) {
 	unfiltered, local, pg, ctx := newSessionProvenancePushSync(t, "agentsview_dialogue_backfill_test")
 	dbtest.SeedDialogueSearch(t, local)
-	projects := []string{"dialogue"}
+	projects := []string{"dialogue-search"}
 	scope := pushSyncStateScope("", projects, nil)
 	filtered := &Sync{pg: pg, local: local, machine: unfiltered.machine, schema: unfiltered.schema, schemaDone: true,
 		syncState: newScopedSyncStateStore(local, scope, false), syncStateTarget: scope, projects: projects,
@@ -67,6 +67,9 @@ func TestPGDialogueBackfillPerScope(t *testing.T) {
 	require.NoError(t, filtered.syncState.SetSyncState(ctx, messageDialogueBackfillStateKey, ""))
 	_, err = filtered.Push(ctx, false, nil)
 	require.NoError(t, err)
+	var dialogue string
+	require.NoError(t, pg.QueryRowContext(ctx, `SELECT dialogue_text FROM messages WHERE session_id='dialogue-search' AND ordinal=1`).Scan(&dialogue))
+	assert.Equal(t, "answerneedle", dialogue)
 	marker, err := filtered.syncState.GetSyncState(ctx, messageDialogueBackfillStateKey)
 	require.NoError(t, err)
 	assert.Equal(t, "1", marker)
