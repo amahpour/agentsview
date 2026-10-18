@@ -1220,7 +1220,8 @@ func createPartialIndexesPG(ctx context.Context, db pgSessionExecer) error {
 func createContentSearchIndexesPG(ctx context.Context, pg interface {
 	pgSessionExecer
 	hostedQuerier
-}) error {
+},
+) error {
 	if _, err := pg.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
 		return err
 	}
