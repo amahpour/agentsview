@@ -23,10 +23,12 @@ import (
 	"go.kenn.io/agentsview/internal/server"
 )
 
-// Friction rules are part of the version so a rules change reaches existing
+const hostedDialogueProjectionVersion = "dialogue-v1"
+
+// Friction rules and hosted dialogue projection changes reach existing
 // hosted sessions through the same reparse rollout as a parser change.
 func rawProcessingVersion() string {
-	return fmt.Sprintf("parser-data-%d+%s", db.CurrentDataVersion(), friction.RulesVersion)
+	return fmt.Sprintf("parser-data-%d+%s+%s", db.CurrentDataVersion(), friction.RulesVersion, hostedDialogueProjectionVersion)
 }
 
 // pgRawRuntime owns one bounded sequential worker/maintenance loop. Stop joins
