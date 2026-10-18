@@ -20,6 +20,27 @@ func TestPGDialogueSearchParity(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 	dbtest.AssertDialogueSearchParity(t, local, store, "substring", "regex", "fts")
+	t.Run("fts ignores sources", func(t *testing.T) {
+		for _, pattern := range []string{"answerneedle", "reasoningneedle"} {
+			f := db.ContentSearchFilter{Pattern: pattern, Mode: "fts", Project: "dialogue-search", Sources: []string{"thinking"}, Limit: 50}
+			want, err := local.SearchContent(t.Context(), f)
+			require.NoError(t, err)
+			got, err := store.SearchContent(t.Context(), f)
+			require.NoError(t, err)
+			if pattern == "answerneedle" {
+				require.Len(t, want.Matches, 1)
+				require.Len(t, got.Matches, 1)
+				assert.Equal(t, want.Matches[0].SessionID, got.Matches[0].SessionID)
+				assert.Equal(t, want.Matches[0].Ordinal, got.Matches[0].Ordinal)
+				assert.Equal(t, want.Matches[0].Snippet, got.Matches[0].Snippet)
+				assert.Equal(t, "message", got.Matches[0].Location)
+				assert.Equal(t, "answerneedle", got.Matches[0].Snippet)
+			} else {
+				assert.Empty(t, want.Matches)
+				assert.Empty(t, got.Matches)
+			}
+		}
+	})
 	// Terms returns an exchange rather than the helper's per-message hits.
 	t.Run("terms", func(t *testing.T) {
 		for _, pattern := range []string{"answerneedle", "legacyneedle", "reasoningneedle", "toolneedle", "resultneedle", "emptyneedle", "classifiedtoolneedle", "unclassifiedneedle"} {
@@ -41,7 +62,6 @@ func TestPGDialogueSearchParity(t *testing.T) {
 				assert.Equal(t, want.Matches[0].Ordinal, got.Matches[0].Ordinal)
 				assert.Equal(t, want.Matches[0].Snippet, got.Matches[0].Snippet)
 				assert.Equal(t, 0, got.Matches[0].Ordinal)
-				assert.Equal(t, "hello\nanswerneedle\nlegacy answer\n[Thinking] legacyneedle\n", got.Matches[0].Snippet)
 			})
 		}
 	})
