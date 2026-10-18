@@ -189,7 +189,7 @@ func (s *RawProjectionStore) refreshStaleRawFriction(
 // does not change content identity or embeddings, so repair physical rows even
 // when the saved payload already contains the current projection. It reports
 // whether physical rows changed so the caller can publish the corpus revision.
-func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message, payload []byte) (bool, error) {
+func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message) (bool, error) {
 	dialogue := make(map[int]*string, len(messages))
 	for _, m := range messages {
 		if m.DialogueText == nil {
@@ -252,7 +252,7 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 	if !changed {
 		return len(ordinals) > 0, nil
 	}
-	payload, err = encodeRawPayload(saved)
+	payload, err := encodeRawPayload(saved)
 	if err != nil {
 		return false, err
 	}

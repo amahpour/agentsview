@@ -72,7 +72,7 @@ func decodeRawPayload(b []byte) (ingest.PreparedSession, error) {
 		return ingest.PreparedSession{}, err
 	}
 	var emptyOrdinals []int
-	if err := dec.Decode(&emptyOrdinals); err != nil && err != io.EOF {
+	if err := dec.Decode(&emptyOrdinals); err != nil && !errors.Is(err, io.EOF) {
 		return ingest.PreparedSession{}, err
 	}
 	empty := make(map[int]bool, len(emptyOrdinals))
