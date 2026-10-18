@@ -18,6 +18,7 @@ type rawRecencyState struct {
 	HealthGrade                *string
 	ToolObservations           []db.ToolObservation `json:",omitzero"`
 	Dialogue                   map[int]*string      `json:",omitempty"`
+	DataVersion                int                  `json:",omitzero"`
 }
 
 func decodeRawRecency(data []byte) (rawRecencyState, error) {
@@ -29,9 +30,7 @@ func decodeRawRecency(data []byte) (rawRecencyState, error) {
 func (r rawRecencyState) apply(p *ingest.PreparedSession) {
 	update := &p.Signals
 	for i := range p.Messages {
-		if dialogue, ok := r.Dialogue[p.Messages[i].Ordinal]; ok {
-			p.Messages[i].DialogueText = dialogue
-		}
+		p.Messages[i].DialogueText = r.Dialogue[p.Messages[i].Ordinal]
 	}
 	update.Outcome, update.OutcomeConfidence = r.Outcome, r.OutcomeConfidence
 	update.SignalsPendingSince = r.SignalsPendingSince
@@ -45,7 +44,7 @@ func (r rawRecencyState) apply(p *ingest.PreparedSession) {
 // later reactivation and reports only a change to a currently materialized row.
 // Equal recent observations retain the original pending timestamp.
 func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.SessionSignalUpdate, messages []db.Message) (bool, error) {
-	next := rawRecencyState{update.Outcome, update.OutcomeConfidence, update.SignalsPendingSince, update.HealthScore, update.HealthGrade, update.ToolObservations, nil}
+	next := rawRecencyState{Outcome: update.Outcome, OutcomeConfidence: update.OutcomeConfidence, SignalsPendingSince: update.SignalsPendingSince, HealthScore: update.HealthScore, HealthGrade: update.HealthGrade, ToolObservations: update.ToolObservations}
 	var data []byte
 	if err := tx.QueryRowContext(ctx, `SELECT recency_state FROM raw_content_revisions WHERE session_id=$1`, id).Scan(&data); err != nil {
 		return false, err
@@ -55,6 +54,7 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 		return false, err
 	}
 	next.Dialogue = prior.Dialogue
+	next.DataVersion = prior.DataVersion
 	if messages != nil {
 		next.Dialogue = make(map[int]*string, len(messages))
 		for _, m := range messages {
@@ -64,8 +64,11 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 			next.Dialogue = nil
 		}
 	}
-	// Older binaries inspect materialized sessions only. A retained prefix can
-	// share a group with a different live revision, so fence the whole group.
+	if next.Dialogue != nil {
+		next.DataVersion = db.CurrentDataVersion()
+	}
+	// A retained prefix can share a group with a different live revision, so
+	// fence the whole group.
 	versioned, err := tx.ExecContext(ctx, `UPDATE sessions SET data_version=$2 WHERE raw_group_id=(SELECT group_id FROM raw_content_revisions WHERE session_id=$1) AND data_version<$2`, id, db.CurrentDataVersion())
 	if err != nil {
 		return false, err

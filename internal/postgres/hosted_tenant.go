@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
-	archivedb "go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/rawsync"
 )
 
@@ -74,6 +74,12 @@ func EnsureHostedTenant(ctx context.Context, database *sql.DB, schema, tenant st
 		if err = checkHostedCatalog(ctx, tx, schema, tenant); err != nil {
 			return err
 		}
+		if err = checkDataVersionCompat(ctx, tx); err != nil {
+			return err
+		}
+		if err = createHostedContentSearchIndexes(ctx, tx); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	if err = preflightHostedAdoption(ctx, tx, schema, tenant); err != nil {
@@ -98,12 +104,11 @@ func EnsureHostedTenant(ctx context.Context, database *sql.DB, schema, tenant st
 	if _, err = ensureColumns(ctx, tx, columns, migrations); err != nil {
 		return err
 	}
-	var dataVersion int
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(data_version),0) FROM sessions`).Scan(&dataVersion); err != nil {
+	if err = checkDataVersionCompat(ctx, tx); err != nil {
 		return err
 	}
-	if dataVersion > archivedb.CurrentDataVersion() {
-		return &archivedb.DataVersionTooNewError{DatabaseVersion: dataVersion, BinaryVersion: archivedb.CurrentDataVersion()}
+	if err = createHostedContentSearchIndexes(ctx, tx); err != nil {
+		return err
 	}
 	if err = createPartialIndexesPG(ctx, tx); err != nil {
 		return err
@@ -139,6 +144,22 @@ func EnsureHostedTenant(ctx context.Context, database *sql.DB, schema, tenant st
 		return err
 	}
 	return tx.Commit()
+}
+
+// Keep optional search indexes from aborting tenant provisioning when pg_trgm
+// is unavailable. The savepoint contains errors inside the owner transaction.
+func createHostedContentSearchIndexes(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT content_search_indexes`); err != nil {
+		return err
+	}
+	if err := createContentSearchIndexesPG(ctx, tx); err != nil {
+		if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT content_search_indexes`); rollbackErr != nil {
+			return rollbackErr
+		}
+		log.Printf("pg schema: content search indexes unavailable, search will scan: %v", err)
+	}
+	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT content_search_indexes`)
+	return err
 }
 
 type hostedQuerier interface {

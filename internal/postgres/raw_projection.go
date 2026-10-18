@@ -229,17 +229,11 @@ func (s *RawProjectionStore) Project(ctx context.Context, lease rawderive.JobLea
 			return err
 		}
 		if count == 0 {
-			physical, err := rawPhysicalExists(ctx, tx, sessionID)
+			dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages)
 			if err != nil {
 				return err
 			}
-			if physical {
-				dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages)
-				if err != nil {
-					return err
-				}
-				derivedChanged = derivedChanged || dialogueChanged
-			}
+			derivedChanged = derivedChanged || dialogueChanged
 		}
 		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals, prepared.Messages)
 		if err != nil {
