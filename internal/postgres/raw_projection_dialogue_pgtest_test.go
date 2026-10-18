@@ -9,7 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/rawderive"
 )
 
 func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
@@ -35,6 +37,11 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT raw_content_revision FROM sessions WHERE id=$1`, before.SessionID).Scan(&revision))
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM raw_content_revisions`).Scan(&revisions))
 	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM raw_embedding_outbox`).Scan(&outbox))
+	// Model an existing hosted database before the dialogue upgrade.
+	_, err = f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=139; UPDATE raw_content_revisions SET recency_state=recency_state-'Dialogue'`)
+	require.NoError(t, err)
+	var originalPayload []byte
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT payload FROM raw_content_revisions WHERE session_id=$1`, before.SessionID).Scan(&originalPayload))
 	store := &Store{pg: f.runtime}
 	// Clear one projection while classifying the assistant and tool rows.
 	parsed.Messages[0].DialogueText = nil
@@ -48,8 +55,8 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 			_, err := f.runtime.ExecContext(t.Context(), `UPDATE messages SET dialogue_text=NULL WHERE session_id=$1`, before.SessionID)
 			require.NoError(t, err)
 		}
-		version := "parser-1+dialogue-v1/" + stage
-		_, err := f.sink.SelectSourceGeneration(t.Context(), m, version)
+		processingVersion := "parser-2/" + stage
+		_, err := f.sink.SelectSourceGeneration(t.Context(), m, processingVersion)
 		require.NoError(t, err)
 		leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "dialogue-worker", 1, time.Minute)
 		require.NoError(t, err)
@@ -62,6 +69,8 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 			var ordinal int
 			require.NoError(t, locked.QueryRowContext(t.Context(), `SELECT ordinal FROM messages WHERE session_id=$1 AND ordinal=1 FOR UPDATE`, before.SessionID).Scan(&ordinal))
 		}
+		var derivedXmin, messageXmin, sessionXmin string
+		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT r.xmin::text,m.xmin::text,s.xmin::text FROM raw_content_revisions r JOIN messages m ON m.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.session_id=$1 AND m.ordinal=1`, before.SessionID).Scan(&derivedXmin, &messageXmin, &sessionXmin))
 		beforeRefresh, err := f.sink.Resolve(t.Context(), "codex:portable")
 		require.NoError(t, err)
 		require.NoError(t, f.sink.Project(t.Context(), leases[0], m, outcome))
@@ -72,10 +81,21 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 		require.NoError(t, err)
 		if stage == "no-op with locked message" {
 			assert.Equal(t, beforeRefresh.CorpusRevision, after.CorpusRevision)
+			var afterDerivedXmin, afterMessageXmin, afterSessionXmin string
+			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT r.xmin::text,m.xmin::text,s.xmin::text FROM raw_content_revisions r JOIN messages m ON m.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.session_id=$1 AND m.ordinal=1`, after.SessionID).Scan(&afterDerivedXmin, &afterMessageXmin, &afterSessionXmin))
+			assert.Equal(t, derivedXmin, afterDerivedXmin, "unchanged reparse leaves derived state untouched")
+			assert.Equal(t, messageXmin, afterMessageXmin, "unchanged reparse leaves message rows untouched")
+			assert.Equal(t, sessionXmin, afterSessionXmin, "unchanged reparse leaves the session untouched")
 		} else {
 			assert.Equal(t, beforeRefresh.CorpusRevision+1, after.CorpusRevision)
 		}
 		assert.Equal(t, before.SessionID, after.SessionID)
+		var version int
+		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT data_version FROM sessions WHERE id=$1`, after.SessionID).Scan(&version))
+		assert.Equal(t, db.CurrentDataVersion(), version)
+		var savedPayload []byte
+		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT payload FROM raw_content_revisions WHERE session_id=$1`, after.SessionID).Scan(&savedPayload))
+		assert.Equal(t, originalPayload, savedPayload, "reparse keeps immutable content unchanged")
 		var gotRevision string
 		var gotRevisions, gotOutbox int
 		require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT raw_content_revision FROM sessions WHERE id=$1`, after.SessionID).Scan(&gotRevision))
@@ -104,4 +124,43 @@ func TestRawProjectionRefreshesDialogueWithoutNewContent(t *testing.T) {
 		assert.Equal(t, "answerneedle", *payload.Messages[1].DialogueText)
 		require.NoError(t, tx.Commit())
 	}
+}
+
+// A prefix can retain its own revision while its branch selects a longer one.
+// Upgrading that prefix must fence the live session before it materializes.
+func TestRawProjectionDialogueUpgradeFencesRetainedRevision(t *testing.T) {
+	f := newProjectionFixture(t)
+	short := projectionOutcome("prefixneedle")
+	short.Outcome.Results[0].Result.Messages = short.Outcome.Results[0].Result.Messages[:1]
+	a, _ := f.accept(t, "device-a", "short", "")
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, a), a, short))
+	prefix, err := f.sink.Resolve(t.Context(), "codex:portable")
+	require.NoError(t, err)
+	b, accepted := f.accept(t, "device-b", "long", "")
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, b), b, projectionOutcome("prefixneedle")))
+	live, err := f.sink.Resolve(t.Context(), "codex:portable")
+	require.NoError(t, err)
+	require.NotEqual(t, prefix.SessionID, live.SessionID)
+	_, err = f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=139; UPDATE raw_content_revisions SET recency_state=recency_state-'Dialogue'`)
+	require.NoError(t, err)
+	short.Outcome.Results[0].Result.Messages[0].DialogueText = new("")
+	_, err = f.sink.SelectSourceGeneration(t.Context(), a, "parser-2")
+	require.NoError(t, err)
+	leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "upgrade-worker", 1, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, leases, 1)
+	require.NoError(t, f.sink.Project(t.Context(), leases[0], a, short))
+	var exists bool
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=$1)`, prefix.SessionID).Scan(&exists))
+	require.False(t, exists, "prefix must remain unmaterialized during the version check")
+	var version int
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT data_version FROM sessions WHERE id=$1`, live.SessionID).Scan(&version))
+	assert.Equal(t, db.CurrentDataVersion(), version)
+	// Removing the longer source materializes the refreshed retained prefix.
+	b, _ = f.accept(t, "device-b", "removed", accepted.Receipt)
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, b), b, rawderive.ParsedManifest{Outcome: parser.ParseOutcome{ResultSetComplete: true, ForceReplace: true}}))
+	var dialogue sql.NullString
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT s.data_version,m.dialogue_text FROM sessions s JOIN messages m ON m.session_id=s.id WHERE s.id=$1 AND m.ordinal=0`, prefix.SessionID).Scan(&version, &dialogue))
+	assert.Equal(t, db.CurrentDataVersion(), version)
+	assert.Equal(t, sql.NullString{Valid: true}, dialogue)
 }

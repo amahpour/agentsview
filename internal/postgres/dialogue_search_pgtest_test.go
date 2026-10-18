@@ -22,7 +22,7 @@ func TestPGDialogueSearchParity(t *testing.T) {
 	dbtest.AssertDialogueSearchParity(t, local, store, "substring", "regex", "fts")
 	// Terms returns an exchange rather than the helper's per-message hits.
 	t.Run("terms", func(t *testing.T) {
-		for _, pattern := range []string{"answerneedle", "legacyneedle", "reasoningneedle", "toolneedle", "resultneedle", "emptyneedle"} {
+		for _, pattern := range []string{"answerneedle", "legacyneedle", "reasoningneedle", "toolneedle", "resultneedle", "emptyneedle", "classifiedtoolneedle", "unclassifiedneedle"} {
 			t.Run(pattern, func(t *testing.T) {
 				f := db.ContentSearchFilter{Pattern: pattern, Mode: "terms", Project: "dialogue-search", Sources: []string{"messages"}, Limit: 50}
 				want, err := local.SearchContent(t.Context(), f)

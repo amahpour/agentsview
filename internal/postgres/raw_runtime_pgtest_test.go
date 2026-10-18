@@ -66,6 +66,7 @@ func TestHostedRuntimeSettlesWithoutUpload(t *testing.T) {
 	now := ended.Add(time.Minute)
 	f.sink.options.Now = func() time.Time { return now }
 	out := projectionOutcome("Implement the change")
+	out.Outcome.Results[0].Result.Messages[0].DialogueText = new("")
 	out.Outcome.Results[0].Result.Session.EndedAt = ended
 	out.Outcome.Results[0].Result.Messages = append(out.Outcome.Results[0].Result.Messages, parser.ParsedMessage{Ordinal: 2, Role: parser.RoleUser, Content: "Continue implementing this change"})
 	m, _ := f.accept(t, "device-a", "recent", "")
@@ -100,6 +101,13 @@ func TestHostedRuntimeSettlesWithoutUpload(t *testing.T) {
 	n, err = f.sink.SettlePendingSignals(t.Context(), 1)
 	require.NoError(t, err)
 	assert.Zero(t, n)
+	tx, err := f.runtime.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+	payload, err := loadRawPayload(t.Context(), tx, after.SessionID)
+	require.NoError(t, err)
+	assert.Equal(t, new(""), payload.Messages[0].DialogueText, "signal settling preserves classified empty dialogue")
+	require.NoError(t, tx.Commit())
 }
 
 func TestHostedRuntimeRolloutResumesAndDoesNotResurrect(t *testing.T) {

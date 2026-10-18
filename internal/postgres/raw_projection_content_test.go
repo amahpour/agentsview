@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"bytes"
-	"encoding/gob"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,44 +9,6 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/ingest"
 )
-
-func TestRawPayloadCodecDialogue(t *testing.T) {
-	p := ingest.PreparedSession{Messages: []db.Message{
-		{Ordinal: 9, DialogueText: new("")},
-		{Ordinal: 3, DialogueText: new("answer")},
-		{Ordinal: 7},
-	}}
-	t.Run("round trip preserves empty and nil", func(t *testing.T) {
-		encoded, err := encodeRawPayload(p)
-		require.NoError(t, err)
-		got, err := decodeRawPayload(encoded)
-		require.NoError(t, err)
-		assert.Equal(t, p, got)
-	})
-	t.Run("pre-trailer stream", func(t *testing.T) {
-		original := ingest.PreparedSession{Session: db.Session{ID: "original"}, Messages: []db.Message{
-			{Ordinal: 3, DialogueText: new("answer")},
-			{Ordinal: 7},
-		}}
-		var encoded bytes.Buffer
-		require.NoError(t, gob.NewEncoder(&encoded).Encode(original))
-		got, err := decodeRawPayload(encoded.Bytes())
-		require.NoError(t, err)
-		assert.Equal(t, original, got)
-	})
-	t.Run("first value unchanged", func(t *testing.T) {
-		encoded, err := encodeRawPayload(p)
-		require.NoError(t, err)
-		var got ingest.PreparedSession
-		require.NoError(t, gob.NewDecoder(bytes.NewReader(encoded)).Decode(&got))
-		want := ingest.PreparedSession{Messages: []db.Message{
-			{Ordinal: 9},
-			{Ordinal: 3, DialogueText: new("answer")},
-			{Ordinal: 7},
-		}}
-		assert.Equal(t, want, got)
-	})
-}
 
 func TestRawProjectionRejectsImageOffload(t *testing.T) {
 	_, err := NewRawProjectionStore(nil, RawProjectionOptions{
