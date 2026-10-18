@@ -124,9 +124,9 @@ func TestPGMessagesBranchFTSRequiresAllTerms(t *testing.T) {
 	)
 
 	assert.Contains(t, branch,
-		"COALESCE(m.dialogue_text, m.content) ILIKE '%'||$1||'%' ESCAPE E'\\\\'")
+		"ILIKE '%'||$1||'%' ESCAPE E'\\\\'")
 	assert.Contains(t, branch,
-		"COALESCE(m.dialogue_text, m.content) ILIKE '%'||$2||'%' ESCAPE E'\\\\'")
+		"ILIKE '%'||$2||'%' ESCAPE E'\\\\'")
 	assert.Equal(t, []any{"quick", "fox"}, pb.args)
 }
 

@@ -12,34 +12,42 @@ import (
 	"go.kenn.io/agentsview/internal/ingest"
 )
 
-func TestRawPayloadPreservesDialogue(t *testing.T) {
+func TestRawPayloadCodecDialogue(t *testing.T) {
 	p := ingest.PreparedSession{Messages: []db.Message{
 		{Ordinal: 9, DialogueText: new("")},
 		{Ordinal: 3, DialogueText: new("answer")},
 		{Ordinal: 7},
 	}}
-	encoded, err := encodeRawPayload(p)
-	require.NoError(t, err)
-	got, err := decodeRawPayload(encoded)
-	require.NoError(t, err)
-	assert.Equal(t, p, got)
-
-	var oldReader ingest.PreparedSession
-	require.NoError(t, gob.NewDecoder(bytes.NewReader(encoded)).Decode(&oldReader))
-	assert.Equal(t, "answer", *oldReader.Messages[1].DialogueText)
-	assert.Nil(t, oldReader.Messages[2].DialogueText)
-}
-
-func TestRawPayloadDecodesOriginalShape(t *testing.T) {
-	p := ingest.PreparedSession{Session: db.Session{ID: "original"}, Messages: []db.Message{
-		{Ordinal: 3, DialogueText: new("answer")},
-		{Ordinal: 7},
-	}}
-	var encoded bytes.Buffer
-	require.NoError(t, gob.NewEncoder(&encoded).Encode(p))
-	got, err := decodeRawPayload(encoded.Bytes())
-	require.NoError(t, err)
-	assert.Equal(t, p, got)
+	t.Run("round trip preserves empty and nil", func(t *testing.T) {
+		encoded, err := encodeRawPayload(p)
+		require.NoError(t, err)
+		got, err := decodeRawPayload(encoded)
+		require.NoError(t, err)
+		assert.Equal(t, p, got)
+	})
+	t.Run("pre-trailer stream", func(t *testing.T) {
+		original := ingest.PreparedSession{Session: db.Session{ID: "original"}, Messages: []db.Message{
+			{Ordinal: 3, DialogueText: new("answer")},
+			{Ordinal: 7},
+		}}
+		var encoded bytes.Buffer
+		require.NoError(t, gob.NewEncoder(&encoded).Encode(original))
+		got, err := decodeRawPayload(encoded.Bytes())
+		require.NoError(t, err)
+		assert.Equal(t, original, got)
+	})
+	t.Run("first value unchanged", func(t *testing.T) {
+		encoded, err := encodeRawPayload(p)
+		require.NoError(t, err)
+		var got ingest.PreparedSession
+		require.NoError(t, gob.NewDecoder(bytes.NewReader(encoded)).Decode(&got))
+		want := ingest.PreparedSession{Messages: []db.Message{
+			{Ordinal: 9},
+			{Ordinal: 3, DialogueText: new("answer")},
+			{Ordinal: 7},
+		}}
+		assert.Equal(t, want, got)
+	})
 }
 
 func TestRawProjectionRejectsImageOffload(t *testing.T) {
