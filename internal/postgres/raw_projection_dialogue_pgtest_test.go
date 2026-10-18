@@ -164,3 +164,101 @@ func TestRawProjectionDialogueUpgradeFencesRetainedRevision(t *testing.T) {
 	assert.Equal(t, db.CurrentDataVersion(), version)
 	assert.Equal(t, sql.NullString{Valid: true}, dialogue)
 }
+
+func TestRawProjectionDialogueVersionChecksAtOpen(t *testing.T) {
+	for _, retainedOnly := range []bool{false, true} {
+		name := "sessions"
+		if retainedOnly {
+			name = "retained revision"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newProjectionFixture(t)
+			out := projectionOutcome("question")
+			out.Outcome.Results[0].Result.Messages[0].DialogueText = new("question")
+			m, receipt := f.accept(t, "device-a", "original", "")
+			require.NoError(t, f.sink.Project(t.Context(), f.lease(t, m), m, out))
+			if retainedOnly {
+				removed, _ := f.accept(t, "device-a", "removed", receipt.Receipt)
+				require.NoError(t, f.sink.Project(t.Context(), f.lease(t, removed), removed, rawderive.ParsedManifest{Outcome: parser.ParseOutcome{ResultSetComplete: true, ForceReplace: true}}))
+				var sessions, marker int
+				require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT count(*) FROM sessions`).Scan(&sessions))
+				assert.Zero(t, sessions)
+				require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions`).Scan(&marker))
+				assert.Equal(t, db.CurrentDataVersion(), marker)
+				_, err := f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=jsonb_set(recency_state,'{DataVersion}',to_jsonb($1::int))`, db.CurrentDataVersion()+1)
+				require.NoError(t, err)
+			} else {
+				_, err := f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=$1`, db.CurrentDataVersion()+1)
+				require.NoError(t, err)
+				_, err = f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=recency_state-'DataVersion'`)
+				require.NoError(t, err)
+			}
+			_, err := NewRawProjectionStore(f.runtime, RawProjectionOptions{Tenant: f.tenant})
+			var tooNew *db.DataVersionTooNewError
+			require.ErrorAs(t, err, &tooNew)
+			assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
+			store, err := NewHostedStore(f.dsn, f.schema, f.tenant, false)
+			if store != nil {
+				t.Cleanup(func() { assert.NoError(t, store.Close()) })
+			}
+			require.ErrorAs(t, err, &tooNew)
+			assert.Equal(t, db.CurrentDataVersion()+1, tooNew.DatabaseVersion)
+			assert.ErrorAs(t, EnsureHostedTenant(t.Context(), f.admin, f.schema, f.tenant), &tooNew)
+		})
+	}
+}
+
+func TestRawProjectionDialogueRecoversAfterOlderRewrite(t *testing.T) {
+	f := newProjectionFixture(t)
+	out := projectionOutcome("question")
+	out.Outcome.Results[0].Result.Messages[0].DialogueText = new("question")
+	out.Outcome.Results[0].Result.Messages[1].Content = "answer commandneedle"
+	out.Outcome.Results[0].Result.Messages[1].DialogueText = new("answer")
+	m, _ := f.accept(t, "device-a", "original", "")
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, m), m, out))
+	before, err := f.sink.Resolve(t.Context(), "codex:portable")
+	require.NoError(t, err)
+	long := projectionOutcome("question")
+	long.Outcome.Results[0].Result.Messages = append(append([]parser.ParsedMessage{}, out.Outcome.Results[0].Result.Messages...), parser.ParsedMessage{Ordinal: 2, Role: parser.RoleAssistant, Content: "more"})
+	b, receipt := f.accept(t, "device-b", "long", "")
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, b), b, long))
+	live, err := f.sink.Resolve(t.Context(), "codex:portable")
+	require.NoError(t, err)
+	require.NotEqual(t, before.SessionID, live.SessionID)
+	_, err = f.runtime.ExecContext(t.Context(), `UPDATE raw_content_revisions SET recency_state=recency_state-'Dialogue'-'DataVersion'`)
+	require.NoError(t, err)
+	// Removing the longer source materializes the retained prefix without
+	// deriving it again, including the older binary's missing dialogue state.
+	removed, _ := f.accept(t, "device-b", "removed", receipt.Receipt)
+	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, removed), removed, rawderive.ParsedManifest{Outcome: parser.ParseOutcome{ResultSetComplete: true, ForceReplace: true}}))
+	var dialogue sql.NullString
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT dialogue_text FROM messages WHERE session_id=$1 AND ordinal=1`, before.SessionID).Scan(&dialogue))
+	assert.False(t, dialogue.Valid)
+	store := &Store{pg: f.runtime}
+	filter := db.ContentSearchFilter{Pattern: "commandneedle", Sources: []string{"messages"}, IncludeOneShot: true}
+	page, err := store.SearchContent(t.Context(), filter)
+	require.NoError(t, err)
+	require.Len(t, page.Matches, 1, "unclassified dialogue falls back to rendered text")
+	_, err = f.sink.SelectSourceGeneration(t.Context(), m, "parser-2")
+	require.NoError(t, err)
+	leases, err := f.jobs.ClaimRawParseJobs(t.Context(), "reparse-worker", 1, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, leases, 1)
+	require.NoError(t, f.sink.Project(t.Context(), leases[0], m, out))
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT dialogue_text FROM messages WHERE session_id=$1 AND ordinal=1`, before.SessionID).Scan(&dialogue))
+	assert.Equal(t, sql.NullString{String: "answer", Valid: true}, dialogue)
+	var marker int
+	require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT (recency_state->>'DataVersion')::int FROM raw_content_revisions WHERE session_id=$1`, before.SessionID).Scan(&marker))
+	assert.Equal(t, db.CurrentDataVersion(), marker)
+	page, err = store.SearchContent(t.Context(), filter)
+	require.NoError(t, err)
+	assert.Empty(t, page.Matches)
+}
+
+func TestPGMirrorDataVersionWithoutRawTables(t *testing.T) {
+	_, _, pg, ctx := newSessionProvenancePushSync(t, "agentsview_dialogue_version_test")
+	var exists bool
+	require.NoError(t, pg.QueryRowContext(ctx, `SELECT to_regclass('raw_content_revisions') IS NOT NULL`).Scan(&exists))
+	require.False(t, exists)
+	require.NoError(t, CheckDataVersionCompat(ctx, pg))
+}
