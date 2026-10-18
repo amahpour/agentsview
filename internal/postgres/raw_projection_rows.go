@@ -226,22 +226,12 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 	if err := rows.Close(); err != nil {
 		return false, err
 	}
-	// Equal encoded payloads prove the saved dialogue is current without
-	// decoding the content graph. Physical rows still need their own check:
-	// an earlier payload can be materialized with missing dialogue.
-	var payloadCurrent bool
-	if err := tx.QueryRowContext(ctx, `SELECT payload=$2 FROM raw_content_revisions WHERE session_id=$1`, id, payload).Scan(&payloadCurrent); err != nil {
-		return false, err
-	}
 	if len(ordinals) > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE messages AS m SET dialogue_text=u.dialogue
 			FROM unnest($2::integer[], $3::text[]) AS u(ordinal, dialogue)
 			WHERE m.session_id=$1 AND m.ordinal=u.ordinal`, id, ordinals, dialogues); err != nil {
 			return false, err
 		}
-	}
-	if payloadCurrent {
-		return len(ordinals) > 0, nil
 	}
 	saved, err := loadRawPayload(ctx, tx, id)
 	if err != nil {
