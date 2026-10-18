@@ -199,7 +199,7 @@ func pgMessagesBranch(
 			'message' AS location,
 			m.role AS role, '' AS tool_name, m.ordinal,
 			m.timestamp AS ts,
-			COALESCE(m.dialogue_text, m.content) AS snippet, 0 AS src, 0::bigint AS row_id, FALSE AS legacy_thinking,
+			COALESCE(m.dialogue_text, m.content) AS snippet, 0 AS src, 0::bigint AS row_id,
 			COALESCE(s.ended_at, s.started_at, s.created_at) AS sort_ts
 		FROM messages m
 		JOIN sessions s ON s.id = m.session_id
@@ -253,7 +253,7 @@ func pgToolInputBranch(
 			'tool_input' AS location,
 			'assistant' AS role, tc.tool_name, tc.message_ordinal AS ordinal,
 			m.timestamp AS ts,
-			tc.input_json AS snippet, 1 AS src, tc.id AS row_id, FALSE AS legacy_thinking,
+			tc.input_json AS snippet, 1 AS src, tc.id AS row_id,
 			COALESCE(s.ended_at, s.started_at, s.created_at) AS sort_ts
 		FROM tool_calls tc
 		JOIN sessions s ON s.id = tc.session_id
@@ -280,7 +280,7 @@ func pgToolResultContentBranch(
 			'tool_result' AS location,
 			'assistant' AS role, tc.tool_name, tc.message_ordinal AS ordinal,
 			m.timestamp AS ts,
-			tc.result_content AS snippet, 2 AS src, tc.id AS row_id, FALSE AS legacy_thinking,
+			tc.result_content AS snippet, 2 AS src, tc.id AS row_id,
 			COALESCE(s.ended_at, s.started_at, s.created_at) AS sort_ts
 		FROM tool_calls tc
 		JOIN sessions s ON s.id = tc.session_id
@@ -311,7 +311,7 @@ func pgToolResultEventsBranch(
 			'assistant' AS role, '' AS tool_name,
 			tre.tool_call_message_ordinal AS ordinal,
 			tre.timestamp AS ts,
-			tre.content AS snippet, 3 AS src, tre.id AS row_id, FALSE AS legacy_thinking,
+			tre.content AS snippet, 3 AS src, tre.id AS row_id,
 			COALESCE(s.ended_at, s.started_at, s.created_at) AS sort_ts
 		FROM tool_result_events tre
 		JOIN sessions s ON s.id = tre.session_id
@@ -607,7 +607,7 @@ func pgThinkingBranch(f db.ContentSearchFilter, escapedPat string, pb *paramBuil
         COALESCE(s.transcript_revision,'') AS transcript_revision,
         'thinking' AS location, m.role, '' AS tool_name, m.ordinal,
         m.timestamp AS ts, m.thinking_text AS snippet,
-        4 AS src, 0::bigint AS row_id, m.dialogue_text IS NULL AS legacy_thinking,
+        4 AS src, 0::bigint AS row_id,
         COALESCE(s.ended_at, s.started_at, s.created_at) AS sort_ts
         FROM messages m JOIN sessions s ON s.id=m.session_id
         JOIN scoped sc ON sc.id=m.session_id
