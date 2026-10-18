@@ -26,7 +26,7 @@ func TestPGPushRepushesDialogueOnlyChanges(t *testing.T) {
 	require.NoError(t, err)
 	messages[1].DialogueText = new("updated\x00dialogue\xe2")
 	session.DataVersion = db.CurrentDataVersion()
-	_, err = local.WriteSessionBatchContext(ctx, []db.SessionBatchWrite{{Session: *session, Messages: messages, ReplaceMessages: true}})
+	_, err = local.WriteSessionBatchContext(ctx, []db.SessionBatchWrite{{Session: *session, Messages: messages, DataVersion: db.CurrentDataVersion(), ReplaceMessages: true}})
 	require.NoError(t, err)
 	result, err := syncer.Push(ctx, false, nil)
 	require.NoError(t, err)
