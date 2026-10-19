@@ -207,17 +207,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Set cache paths before setup-go restores its cache.
-      - &windows-go-paths
-        name: Prepare Windows Go paths
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          foreach ($name in @('GOCACHE', 'GOMODCACHE', 'TMP', 'TEMP')) {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            New-Item -ItemType Directory -Force -Path $path | Out-Null
-            "$name=$path" >> $env:GITHUB_ENV
-          }
+      # Set cache paths before setup-go and the Go cache restore.
+      - name: Prepare Windows Go paths
+        uses: ./.github/actions/windows-go-paths
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -373,7 +365,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - *windows-go-paths
+      - name: Prepare Windows Go paths
+        uses: ./.github/actions/windows-go-paths
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -546,7 +539,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - *windows-go-paths
+      - name: Prepare Windows Go paths
+        uses: ./.github/actions/windows-go-paths
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:

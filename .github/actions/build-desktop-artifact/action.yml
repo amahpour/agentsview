@@ -17,6 +17,9 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prepare Windows Go paths
+      uses: ./.github/actions/windows-go-paths
+
     - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
       with:
         go-version-file: go.mod
@@ -167,9 +170,12 @@ runs:
           exit 1
         fi
 
-    # No test job runs on Linux ARM64, so the desktop build owns that platform's cache.
+    # The test job covers Linux x64, Windows x64 and macOS ARM64; desktop builds
+    # own the caches of the platforms it does not run on.
     - name: Save Go caches
-      if: runner.os == 'Linux' && runner.arch == 'ARM64'
+      if: >-
+        (runner.os == 'Linux' && runner.arch == 'ARM64')
+        || (runner.os == 'macOS' && runner.arch == 'X64')
       uses: ./.github/actions/go-cache-save
 
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
