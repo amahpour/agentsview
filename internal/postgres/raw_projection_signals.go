@@ -7,7 +7,6 @@ import (
 	"reflect"
 
 	"go.kenn.io/agentsview/internal/db"
-	"go.kenn.io/agentsview/internal/ingest"
 )
 
 // Derived facts stay mutable without participating in immutable content identity.
@@ -17,8 +16,6 @@ type rawRecencyState struct {
 	HealthScore                *int
 	HealthGrade                *string
 	ToolObservations           []db.ToolObservation `json:",omitzero"`
-	Dialogue                   map[int]*string      `json:",omitempty"`
-	DataVersion                int                  `json:",omitzero"`
 }
 
 func decodeRawRecency(data []byte) (rawRecencyState, error) {
@@ -27,11 +24,7 @@ func decodeRawRecency(data []byte) (rawRecencyState, error) {
 	return state, err
 }
 
-func (r rawRecencyState) apply(p *ingest.PreparedSession) {
-	update := &p.Signals
-	for i := range p.Messages {
-		p.Messages[i].DialogueText = r.Dialogue[p.Messages[i].Ordinal]
-	}
+func (r rawRecencyState) apply(update *db.SessionSignalUpdate) {
 	update.Outcome, update.OutcomeConfidence = r.Outcome, r.OutcomeConfidence
 	update.SignalsPendingSince = r.SignalsPendingSince
 	update.HealthScore, update.HealthGrade = r.HealthScore, r.HealthGrade
@@ -43,8 +36,8 @@ func (r rawRecencyState) apply(p *ingest.PreparedSession) {
 // publishRawRecency runs under the logical group lock. It persists settling for
 // later reactivation and reports only a change to a currently materialized row.
 // Equal recent observations retain the original pending timestamp.
-func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.SessionSignalUpdate, messages []db.Message) (bool, error) {
-	next := rawRecencyState{Outcome: update.Outcome, OutcomeConfidence: update.OutcomeConfidence, SignalsPendingSince: update.SignalsPendingSince, HealthScore: update.HealthScore, HealthGrade: update.HealthGrade, ToolObservations: update.ToolObservations}
+func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.SessionSignalUpdate) (bool, error) {
+	next := rawRecencyState{update.Outcome, update.OutcomeConfidence, update.SignalsPendingSince, update.HealthScore, update.HealthGrade, update.ToolObservations}
 	var data []byte
 	if err := tx.QueryRowContext(ctx, `SELECT recency_state FROM raw_content_revisions WHERE session_id=$1`, id).Scan(&data); err != nil {
 		return false, err
@@ -53,33 +46,6 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 	if err != nil {
 		return false, err
 	}
-	next.Dialogue = prior.Dialogue
-	next.DataVersion = prior.DataVersion
-	if messages != nil {
-		next.Dialogue = make(map[int]*string, len(messages))
-		for _, m := range messages {
-			next.Dialogue[m.Ordinal] = m.DialogueText
-		}
-		if len(next.Dialogue) == 0 {
-			next.Dialogue = nil
-		}
-	}
-	if next.Dialogue != nil {
-		next.DataVersion = db.CurrentDataVersion()
-	}
-	var versionCount int64
-	if messages != nil {
-		// A retained prefix can share a group with a different live revision, so
-		// fence the whole group.
-		versioned, err := tx.ExecContext(ctx, `UPDATE sessions SET data_version=$2 WHERE raw_group_id=(SELECT group_id FROM raw_content_revisions WHERE session_id=$1) AND data_version<$2`, id, db.CurrentDataVersion())
-		if err != nil {
-			return false, err
-		}
-		versionCount, err = versioned.RowsAffected()
-		if err != nil {
-			return false, err
-		}
-	}
 	if next.ToolObservations == nil {
 		next.ToolObservations = prior.ToolObservations
 	}
@@ -87,7 +53,7 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 		next.SignalsPendingSince = prior.SignalsPendingSince
 	}
 	if reflect.DeepEqual(prior, next) {
-		return versionCount > 0, nil
+		return false, nil
 	}
 	data, err = json.Marshal(next)
 	if err != nil {
@@ -123,5 +89,5 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 		}
 		count += changed
 	}
-	return count+versionCount > 0, nil
+	return count > 0, nil
 }

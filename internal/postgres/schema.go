@@ -2454,7 +2454,7 @@ func pushSchemaCurrent(ctx context.Context, db *sql.DB) bool {
 
 // CheckDataVersionCompat rejects PG datasets containing rows written by a
 // newer agentsview parser. PG does not have SQLite's global user_version, so
-// sessions and retained raw derivations carry compatibility markers.
+// sessions carry the parser version.
 func CheckDataVersionCompat(ctx context.Context, pg *sql.DB) error {
 	return checkDataVersionCompat(ctx, pg)
 }
@@ -2469,15 +2469,6 @@ func checkDataVersionCompat(ctx context.Context, pg hostedQuerier) error {
 			return nil
 		}
 		return fmt.Errorf("checking PG data version: %w", err)
-	}
-	var rawExists bool
-	if err := pg.QueryRowContext(ctx, `SELECT to_regclass('raw_content_revisions') IS NOT NULL`).Scan(&rawExists); err != nil {
-		return fmt.Errorf("checking PG retained data version table: %w", err)
-	}
-	if rawExists {
-		if err := pg.QueryRowContext(ctx, `SELECT GREATEST($1::int, COALESCE(MAX((recency_state->>'DataVersion')::int), 0)) FROM raw_content_revisions`, version).Scan(&version); err != nil {
-			return fmt.Errorf("checking PG retained data version: %w", err)
-		}
 	}
 	if version > db.CurrentDataVersion() {
 		return &db.DataVersionTooNewError{DatabaseVersion: version, BinaryVersion: db.CurrentDataVersion()}

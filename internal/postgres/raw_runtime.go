@@ -71,7 +71,7 @@ func (s *RawProjectionStore) SettlePendingSignals(ctx context.Context, limit int
 		if err != nil {
 			return 0, err
 		}
-		updated, err := publishRawRecency(ctx, tx, c.id, ingest.RefreshSignalRecencyAt(p.Session, p.Messages, p.Signals, now), nil)
+		updated, err := publishRawRecency(ctx, tx, c.id, ingest.RefreshSignalRecencyAt(p.Session, p.Messages, p.Signals, now))
 		if err != nil {
 			return 0, err
 		}

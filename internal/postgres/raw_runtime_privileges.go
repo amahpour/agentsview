@@ -31,6 +31,7 @@ var hostedProjectionPrivileges = []struct{ table, privileges string }{
 	{"raw_projection_generations", "SELECT,INSERT"},
 	{"raw_session_groups", "SELECT,INSERT,UPDATE"},
 	{"raw_content_revisions", "SELECT,INSERT,UPDATE"},
+	{"raw_message_dialogue", "SELECT,INSERT,UPDATE,DELETE"},
 	{"raw_session_branches", "SELECT,INSERT,UPDATE"},
 	{"session_sources", "SELECT,INSERT,UPDATE,DELETE"},
 	{"raw_source_contributions", "SELECT,INSERT"},

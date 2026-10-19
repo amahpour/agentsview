@@ -185,18 +185,39 @@ func (s *RawProjectionStore) refreshStaleRawFriction(
 	return insertPGFrictionFindings(ctx, tx, id, p.Friction.Findings)
 }
 
-// refreshRawDialogue runs under Project's group locks and lease fence. Dialogue
-// does not change content identity or embeddings, so repair physical rows even
-// when the derived state already contains the current projection. It reports
-// whether physical rows changed so the caller can publish the corpus revision.
-func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message) (bool, error) {
+// syncRawDialogue runs under Project's group locks and lease fence. It keeps
+// retained and materialized dialogue current without changing content identity
+// or embeddings, and reports changes for corpus revision publication.
+func syncRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []db.Message) (bool, error) {
 	dialogue := make(map[int]*string, len(messages))
+	classifiedOrdinals := make([]int, 0, len(messages))
+	classifiedDialogue := make([]string, 0, len(messages))
 	for _, m := range messages {
-		if m.DialogueText == nil {
-			dialogue[m.Ordinal] = nil
-		} else {
-			dialogue[m.Ordinal] = new(sanitizePG(*m.DialogueText))
+		if m.DialogueText != nil {
+			text := sanitizePG(*m.DialogueText)
+			dialogue[m.Ordinal] = &text
+			classifiedOrdinals = append(classifiedOrdinals, m.Ordinal)
+			classifiedDialogue = append(classifiedDialogue, text)
 		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO raw_message_dialogue(session_id,ordinal,dialogue_text)
+ SELECT $1,o,d FROM unnest($2::int[],$3::text[]) u(o,d)
+ ON CONFLICT(tenant_id,session_id,ordinal) DO UPDATE SET dialogue_text=EXCLUDED.dialogue_text
+ WHERE raw_message_dialogue.dialogue_text IS DISTINCT FROM EXCLUDED.dialogue_text`, id, classifiedOrdinals, classifiedDialogue)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	result, err = tx.ExecContext(ctx, `DELETE FROM raw_message_dialogue WHERE session_id=$1 AND ordinal <> ALL($2::int[])`, id, classifiedOrdinals)
+	if err != nil {
+		return false, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT ordinal, dialogue_text FROM messages WHERE session_id=$1`, id)
 	if err != nil {
@@ -211,10 +232,7 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 		if err := rows.Scan(&ordinal, &stored); err != nil {
 			return false, err
 		}
-		wanted, exists := dialogue[ordinal]
-		if !exists {
-			continue
-		}
+		wanted := dialogue[ordinal]
 		if stored.Valid != (wanted != nil) || wanted != nil && stored.String != *wanted {
 			ordinals = append(ordinals, ordinal)
 			dialogues = append(dialogues, wanted)
@@ -232,8 +250,11 @@ func refreshRawDialogue(ctx context.Context, tx *sql.Tx, id string, messages []d
 			WHERE m.session_id=$1 AND m.ordinal=u.ordinal`, id, ordinals, dialogues); err != nil {
 			return false, err
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET data_version=$2 WHERE id=$1 AND data_version<$2`, id, db.CurrentDataVersion()); err != nil {
+			return false, err
+		}
 	}
-	return len(ordinals) > 0, nil
+	return changed+deleted > 0 || len(ordinals) > 0, nil
 }
 
 func (s *RawProjectionStore) writePayload(ctx context.Context, tx *sql.Tx, id, group, revision string, p ingest.PreparedSession) error {

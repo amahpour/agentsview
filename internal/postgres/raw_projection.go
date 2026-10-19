@@ -220,22 +220,16 @@ func (s *RawProjectionStore) Project(ctx context.Context, lease rawderive.JobLea
 		if err != nil {
 			return err
 		}
-		inserted, err := tx.ExecContext(ctx, `INSERT INTO raw_content_revisions(session_id,group_id,content_revision,payload) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING`, sessionID, group, revision, payload)
+		_, err = tx.ExecContext(ctx, `INSERT INTO raw_content_revisions(session_id,group_id,content_revision,payload) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING`, sessionID, group, revision, payload)
 		if err != nil {
 			return err
 		}
-		count, err := inserted.RowsAffected()
+		dialogueChanged, err := syncRawDialogue(ctx, tx, sessionID, prepared.Messages)
 		if err != nil {
 			return err
 		}
-		if count == 0 {
-			dialogueChanged, err := refreshRawDialogue(ctx, tx, sessionID, prepared.Messages)
-			if err != nil {
-				return err
-			}
-			derivedChanged = derivedChanged || dialogueChanged
-		}
-		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals, prepared.Messages)
+		derivedChanged = derivedChanged || dialogueChanged
+		visibleChange, err := publishRawRecency(ctx, tx, sessionID, prepared.Signals)
 		if err != nil {
 			return err
 		}
@@ -373,7 +367,27 @@ func loadRawPayload(ctx context.Context, tx *sql.Tx, id string) (ingest.Prepared
 		if err != nil {
 			return p, err
 		}
-		state.apply(&p)
+		state.apply(&p.Signals)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT ordinal, dialogue_text FROM raw_message_dialogue WHERE session_id=$1`, id)
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	dialogue := make(map[int]*string)
+	for rows.Next() {
+		var ordinal int
+		var text string
+		if err := rows.Scan(&ordinal, &text); err != nil {
+			return p, err
+		}
+		dialogue[ordinal] = &text
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	for i := range p.Messages {
+		p.Messages[i].DialogueText = dialogue[p.Messages[i].Ordinal]
 	}
 	return p, nil
 }
