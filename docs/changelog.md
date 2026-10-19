@@ -27,14 +27,15 @@ The latest release is
   `messages.dialogue_text` until the first push.
   PostgreSQL performs one full push per scope after upgrading. A `pg serve`
   mirror reader accepts the schema once `messages.dialogue_text` exists.
-  Rows awaiting the full push still search rendered text. For hosted servers,
-  first run
-  `GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime`
-  as the database owner, then refresh existing uploads with
-  `agentsview pg raw-reparse hosted --run-id <id>`.
-  Repeat the same run ID until it reports `complete=true`.
-  Keep hosted deployments on this version or newer. Older binaries bypass the
-  data version check and can discard saved dialogue projections.
+  Rows awaiting a push or reparse still search rendered text. For hosted
+  servers, first run `agentsview pg hosted-provision provision` and apply the
+  [runtime grants](https://agentsview.io/docs/hosted-raw-sync/#provision-a-hosted-instance),
+  including
+  `GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime`,
+  as the database owner. Refresh existing uploads with
+  `agentsview pg raw-reparse hosted --run-id <id>`. Repeat the same run ID until
+  it reports `complete=true`. After provisioning, older hosted runtimes refuse
+  the schema with `uninventoried relation raw_message_dialogue`.
   Artifact transport is a separate follow-up;
   semantic search continues to use rendered messages.
 
