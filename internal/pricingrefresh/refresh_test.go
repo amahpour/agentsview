@@ -396,7 +396,6 @@ func TestEnsureCurrentCancellationAllowsImmediateRetry(t *testing.T) {
 	}, now)
 
 	require.ErrorIs(t, err, context.Canceled)
-	waitForRefreshGate(database)
 	assertPricingAttemptMeta(t, database, previous)
 	retryCalls := 0
 	err = ensureCurrent(t.Context(), database, func(
@@ -453,7 +452,6 @@ func TestEnsureCurrentStopsWaitingBehindALongWrite(t *testing.T) {
 
 	endWrite()
 	require.NoError(t, <-writeDone)
-	waitForRefreshGate(database)
 	assertPricingAttemptMeta(t, database, previous)
 }
 
@@ -555,15 +553,6 @@ func testDB(t *testing.T) *db.DB {
 	return dbtest.OpenTestDBAt(
 		t, filepath.Join(t.TempDir(), "sessions.db"),
 	)
-}
-
-// waitForRefreshGate returns once no refresh holds the gate, including the
-// background restore after a canceled refresh.
-func waitForRefreshGate(database *db.DB) {
-	gate := retainRefreshGate(database)
-	<-gate.slot
-	gate.slot <- struct{}{}
-	releaseRefreshGateReference(database, gate)
 }
 
 func pricingTestNow() time.Time {

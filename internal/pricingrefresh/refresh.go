@@ -4,7 +4,6 @@ package pricingrefresh
 import (
 	"context"
 	"fmt"
-	"log"
 	"slices"
 	"strings"
 	"sync"
@@ -265,14 +264,13 @@ func runCurrent(
 			return ctx.Err()
 		}
 	}
-	releaseGate := func() {
+	defer func() {
 		gate.slot <- struct{}{}
 		releaseRefreshGateReference(database, gate)
-	}
+	}()
 
 	previousAttempt, err := database.GetPricingMetaContext(ctx, refreshAttemptMetaKey)
 	if err != nil {
-		releaseGate()
 		return fmt.Errorf("reading pricing refresh meta: %w", err)
 	}
 	fetchCurrent := func() (pricing.Catalog, error) {
@@ -286,18 +284,23 @@ func runCurrent(
 		_, err = ensure(ctx, database, false, fetchCurrent, now)
 	}
 	if err == nil || ctx.Err() == nil {
-		releaseGate()
 		return err
 	}
-	// Put back the previous attempt time so the next refresh can retry. That
-	// write can wait behind a long archive write, and a canceled push must
-	// not, so it finishes in the background and holds the gate until then.
-	go func() {
-		defer releaseGate()
-		if err := database.SetPricingMeta(refreshAttemptMetaKey, previousAttempt); err != nil {
-			log.Printf("warning: restoring pricing refresh attempt after cancellation: %v", err)
-		}
-	}()
+	// Put back the previous attempt time so the next refresh can retry. Skip
+	// the write when this refresh never recorded an attempt: it can wait
+	// behind a long archive write, and a canceled push should not.
+	current, readErr := database.GetPricingMeta(refreshAttemptMetaKey)
+	if readErr == nil && current == previousAttempt {
+		return err
+	}
+	if restoreErr := database.SetPricingMeta(
+		refreshAttemptMetaKey, previousAttempt,
+	); restoreErr != nil {
+		return fmt.Errorf(
+			"restoring pricing refresh attempt after cancellation: %w: %w",
+			restoreErr, err,
+		)
+	}
 	return err
 }
 
