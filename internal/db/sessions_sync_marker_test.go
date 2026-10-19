@@ -693,6 +693,9 @@ func TestMirrorPushCutoffStopsWaitingBehindALongWrite(t *testing.T) {
 		_, err := database.MirrorPushCutoff(ctx)
 		cutoff <- err
 	}()
+	require.Eventually(t, func() bool {
+		return testutil.GoroutineBlockedOnMutexIn("lockctx.Lock")
+	}, 10*time.Second, 5*time.Millisecond)
 	cancel()
 	select {
 	case err := <-cutoff:
