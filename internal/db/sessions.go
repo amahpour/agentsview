@@ -6808,19 +6808,43 @@ func (db *DB) CountSessionsForMirrorScope(
 // It also waits while the writer is closed for a worker handoff. A sync-worker
 // child writes the archive then, outside this process's write lock, so a
 // cutoff taken during the handoff has the same gap. MirrorPushCutoff returns
-// ctx.Err() if ctx ends first.
+// ctx.Err() if ctx ends first, including while a long write holds the lock.
 func (db *DB) MirrorPushCutoff(ctx context.Context) (string, error) {
 	for {
 		if err := db.WaitForWriter(ctx); err != nil {
 			return "", err
 		}
-		db.mu.Lock()
+		if err := db.lockWriterCtx(ctx); err != nil {
+			return "", err
+		}
 		if !db.writerClosed.Load() {
 			cutoff := time.Now().UTC().Format(mirrorWindowBoundLayout)
 			db.mu.Unlock()
 			return cutoff, nil
 		}
 		db.mu.Unlock()
+	}
+}
+
+// lockWriterCtx takes the write lock in the lock's normal queue, so a cutoff
+// is not starved by back-to-back writes, and returns if ctx ends first. A
+// request that gives up leaves a goroutine that releases the lock once it is
+// granted.
+func (db *DB) lockWriterCtx(ctx context.Context) error {
+	locked := make(chan struct{})
+	go func() {
+		db.mu.Lock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+		return nil
+	case <-ctx.Done():
+		go func() {
+			<-locked
+			db.mu.Unlock()
+		}()
+		return fmt.Errorf("stopped while waiting for an archive write to finish: %w", ctx.Err())
 	}
 }
 

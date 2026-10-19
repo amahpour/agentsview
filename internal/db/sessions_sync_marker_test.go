@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -537,7 +538,7 @@ func TestMirrorPushCutoffCoversOpenWriteTransaction(t *testing.T) {
 	// lock, so a push that ignores the open transaction lists first.
 	var got listing
 	received := false
-	for !received && !testutil.GoroutineBlockedOnMutexIn("(*DB).MirrorPushCutoff") {
+	for !received && !testutil.GoroutineBlockedOnMutexIn("(*DB).lockWriterCtx") {
 		select {
 		case got = <-listed:
 			received = true
@@ -666,4 +667,42 @@ func TestWaitForWriterSaysItGaveUpOnATimeout(t *testing.T) {
 		assert.EqualError(t, err,
 			"gave up waiting for the local sync to finish: context deadline exceeded")
 	})
+}
+
+// A canceled push must not wait out a long archive write for its cutoff: it
+// would keep the daemon's push turn and hold up shutdown.
+func TestMirrorPushCutoffStopsWaitingBehindALongWrite(t *testing.T) {
+	database := testDB(t)
+	inWrite := make(chan struct{})
+	release := make(chan struct{})
+	// Release the write before the database closes, even when the test fails.
+	endWrite := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(endWrite)
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- database.Update(t.Context(), func(*sql.Tx) error {
+			close(inWrite)
+			<-release
+			return nil
+		})
+	}()
+	<-inWrite
+	ctx, cancel := context.WithCancel(t.Context())
+	cutoff := make(chan error, 1)
+	go func() {
+		_, err := database.MirrorPushCutoff(ctx)
+		cutoff <- err
+	}()
+	cancel()
+	select {
+	case err := <-cutoff:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "the cutoff waited for the write after its request ended")
+	}
+	endWrite()
+	require.NoError(t, <-writeDone)
+	// The abandoned lock request must not keep the lock.
+	_, err := database.MirrorPushCutoff(t.Context())
+	require.NoError(t, err)
 }

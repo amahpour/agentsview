@@ -634,7 +634,7 @@ func (s *Sync) pushWithOptions(
 			return result, err
 		}
 		if full && result.Errors == 0 {
-			if err := s.reconcilePGMissingSessions(ctx, markerID); err != nil {
+			if err := s.reconcilePGMissingSessions(ctx, markerID, legacyMarkerMachines); err != nil {
 				return result, err
 			}
 		}
@@ -766,7 +766,7 @@ func (s *Sync) pushWithOptions(
 		return result, err
 	}
 	if full && result.Errors == 0 {
-		if err := s.reconcilePGMissingSessions(ctx, markerID); err != nil {
+		if err := s.reconcilePGMissingSessions(ctx, markerID, legacyMarkerMachines); err != nil {
 			return result, err
 		}
 	}
@@ -2097,7 +2097,9 @@ func purgePGExcludedPushSessions(
 
 // Reconcile after publishing sessions so Codex page curation transfers finish
 // before deletion cascades. The unfinished full run keeps failed cleanup retryable.
-func (s *Sync) reconcilePGMissingSessions(ctx context.Context, ownerMarker string) error {
+func (s *Sync) reconcilePGMissingSessions(
+	ctx context.Context, ownerMarker string, legacyMarkerMachines []string,
+) error {
 	// Empty Codex thread anchors still own remote restore/purge scope.
 	where := "owner_marker = $1 AND NOT (trash_includes_codex_pages AND deleted_at IS NOT NULL)"
 	args := []any{ownerMarker}
@@ -2109,18 +2111,25 @@ func (s *Sync) reconcilePGMissingSessions(ctx context.Context, ownerMarker strin
 		args = append(args, s.excludeProjects)
 		where += fmt.Sprintf(" AND project <> ALL($%d)", len(args))
 	}
-	rows, err := s.pg.QueryContext(ctx, "SELECT id FROM sessions WHERE "+where, args...)
+	rows, err := s.pg.QueryContext(ctx,
+		"SELECT id, agent, COALESCE(file_path, '') FROM sessions WHERE "+where, args...)
 	if err != nil {
 		return fmt.Errorf("listing owned pg sessions for full push reconciliation: %w", err)
 	}
 	defer rows.Close()
 	var ids []string
+	// A legacy Codex thread row names the file of the page that replaced it.
+	codexPaths := make(map[string]string)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, agent, path string
+		if err := rows.Scan(&id, &agent, &path); err != nil {
 			return fmt.Errorf("scanning owned pg session for full push reconciliation: %w", err)
 		}
 		ids = append(ids, id)
+		switch agent {
+		case "codex", "traex", "augure-code":
+			codexPaths[id] = path
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -2136,9 +2145,23 @@ func (s *Sync) reconcilePGMissingSessions(ctx context.Context, ownerMarker strin
 			return err
 		}
 		var missing []string
+		var pages []db.Session
 		for _, id := range chunk {
-			if _, exists := present[id]; !exists {
-				missing = append(missing, id)
+			if _, exists := present[id]; exists {
+				continue
+			}
+			missing = append(missing, id)
+			path, ok := codexPaths[id]
+			key := parser.CodexSessionUUIDFromPath(path)
+			if !ok || key == "" {
+				continue
+			}
+			page, err := s.local.GetArtifactExportSession(ctx, id[:strings.LastIndex(id, ":")+1]+key)
+			if err != nil {
+				return fmt.Errorf("reading retained Codex page: %w", err)
+			}
+			if page != nil {
+				pages = append(pages, *page)
 			}
 		}
 		if len(missing) == 0 {
@@ -2149,6 +2172,13 @@ func (s *Sync) reconcilePGMissingSessions(ctx context.Context, ownerMarker strin
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		// A filtered push skips a page outside its projects, so the batch push
+		// never moved the old thread's pins, stars, and title onto it. Move
+		// them now, or fail when the page is excluded, before the delete
+		// cascades to that curation.
+		if err := s.migrateCodexPages(ctx, tx, pages, ownerMarker, legacyMarkerMachines); err != nil {
+			return err
+		}
 		// Recheck ownership and scope, and clear vectors only for deleted rows.
 		rows, err := tx.QueryContext(ctx,
 			"DELETE FROM sessions WHERE "+where+fmt.Sprintf(" AND id = ANY($%d) RETURNING id", len(args)+1),

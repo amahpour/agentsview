@@ -452,8 +452,8 @@ func startDaemonPushHeartbeatTo(w io.Writer, label string) func() {
 // one line saying so and keeps the heartbeat. The report that the archive
 // was rebuilt also keeps it, since schema migration may follow without
 // progress events. A push that waits for a local sync prints a line each time
-// the daemon reports the wait. The returned finish func stops the heartbeat (if no event ever
-// arrived) and clears the in-place line.
+// the daemon reports the wait. The returned finish func stops the heartbeat
+// (if no event ever arrived) and clears the in-place line.
 func daemonPushProgress[P any](
 	label string, phase func(P) string, render func(P),
 ) (onProgress func(P), finish func()) {
