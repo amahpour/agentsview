@@ -2146,6 +2146,9 @@ func (s *Sync) reconcilePGMissingSessions(
 		}
 		var missing []string
 		var pages []db.Session
+		// Threads whose page this push excludes, checked for curation under
+		// a row lock in the delete transaction below.
+		excluded := make(map[string]db.Session)
 		for _, id := range chunk {
 			if _, exists := present[id]; exists {
 				continue
@@ -2164,15 +2167,8 @@ func (s *Sync) reconcilePGMissingSessions(
 				continue
 			}
 			if projectFailsFilter(page.Project, s.projects, s.excludeProjects) {
-				// An excluded page fails the push only when the thread has
-				// curation to move. Otherwise the thread row goes.
-				curated, err := s.codexThreadCurated(ctx, id)
-				if err != nil {
-					return err
-				}
-				if !curated {
-					continue
-				}
+				excluded[id] = *page
+				continue
 			}
 			pages = append(pages, *page)
 		}
@@ -2184,6 +2180,16 @@ func (s *Sync) reconcilePGMissingSessions(
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		// An excluded page fails the push only when the thread has curation
+		// to move. Otherwise the thread row goes. The row lock makes a pin,
+		// star, or rename that commits during the push wait for this check.
+		curated, err := lockCuratedCodexThreads(ctx, tx, mapKeys(excluded))
+		if err != nil {
+			return err
+		}
+		for _, id := range curated {
+			pages = append(pages, excluded[id])
+		}
 		// A filtered push skips a page outside its projects, so the batch push
 		// never moved the old thread's pins, stars, and title onto it. Move
 		// them now, or fail when the page is excluded, before the delete
@@ -4591,19 +4597,42 @@ func (s *Sync) syncCursorUsageEvents(ctx context.Context) error {
 	return nil
 }
 
-// codexThreadCurated reports whether a PostgreSQL thread row holds curation a
-// user added remotely: pins, a star, a rename, or a trash change.
-func (s *Sync) codexThreadCurated(ctx context.Context, threadID string) (bool, error) {
-	var curated bool
-	if err := s.pg.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM pinned_messages WHERE session_id = $1)
-			OR EXISTS (SELECT 1 FROM starred_sessions WHERE session_id = $1)
-			OR EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND (
-				display_name IS DISTINCT FROM source_display_name
-				OR deleted_at IS DISTINCT FROM source_deleted_at))`,
-		threadID,
-	).Scan(&curated); err != nil {
-		return false, fmt.Errorf("checking Codex thread curation: %w", err)
+// lockCuratedCodexThreads locks the PostgreSQL thread rows with ids and
+// returns those holding curation a user added remotely: pins, a star, a
+// rename, or a trash change.
+func lockCuratedCodexThreads(ctx context.Context, tx *sql.Tx, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`SELECT 1 FROM sessions WHERE id = ANY($1) ORDER BY id FOR UPDATE`, ids,
+	); err != nil {
+		return nil, fmt.Errorf("locking Codex threads: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT s.id FROM sessions s
+		WHERE s.id = ANY($1) AND (
+			EXISTS (SELECT 1 FROM pinned_messages p WHERE p.session_id = s.id)
+			OR EXISTS (SELECT 1 FROM starred_sessions st WHERE st.session_id = s.id)
+			OR s.display_name IS DISTINCT FROM s.source_display_name
+			OR s.deleted_at IS DISTINCT FROM s.source_deleted_at)
+		ORDER BY s.id`,
+		ids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("checking Codex thread curation: %w", err)
+	}
+	defer rows.Close()
+	var curated []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("checking Codex thread curation: %w", err)
+		}
+		curated = append(curated, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("checking Codex thread curation: %w", err)
 	}
 	return curated, nil
 }

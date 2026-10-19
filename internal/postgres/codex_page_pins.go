@@ -153,8 +153,9 @@ func (s *Sync) migrateCodexPages(
 		}
 		if projectFailsFilter(page.Project, s.projects, s.excludeProjects) {
 			return fmt.Errorf(
-				"kept Codex thread %s: its pins and other curation move to its page in project %q, which this push excludes; "+
-					"include that project with --projects, or remove it from --exclude-projects or the exclude_projects setting",
+				"push stopped: Codex thread %s has pins or other edits that must move to its page in project %q, "+
+					"which this push excludes, so the thread was kept; add that project to --projects or the projects setting, "+
+					"or remove it from --exclude-projects or the exclude_projects setting",
 				old.id, page.Project)
 		}
 		var pageExists bool

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -394,8 +395,9 @@ func TestCodexPageUpgradeIncrementalPushCopiesFriction(t *testing.T) {
 // holds the only copy of its pins, star, and title. A thread with no curation
 // has nothing to lose, so the push deletes it and succeeds.
 func TestFilteredFullPushKeepsCuratedCodexThreadWhosePageIsExcluded(t *testing.T) {
-	for _, curated := range []bool{true, false} {
-		t.Run(fmt.Sprintf("curated=%t", curated), func(t *testing.T) {
+	for _, mode := range []string{"curated", "uncurated", "pinned during push"} {
+		t.Run(mode, func(t *testing.T) {
+			curated := mode == "curated"
 			const thread = "codex:11111111-1111-4111-8111-111111111111"
 			const page = thread + "_22222222-2222-4222-8222-222222222222"
 			const schema = "agentsview_codex_page_filtered_cleanup_test"
@@ -455,6 +457,37 @@ func TestFilteredFullPushKeepsCuratedCodexThreadWhosePageIsExcluded(t *testing.T
 			upgraded, err := New(pgURL, schema, rebuilt, "machine", true, projects)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, upgraded.Close()) })
+			if mode == "pinned during push" {
+				// A pin that commits while the push runs must reach the
+				// curation check, or the push deletes it with the thread.
+				pin, err := syncer.pg.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = pin.Rollback() })
+				require.NoError(t, lockPinnedMessagesSession(ctx, pin, thread))
+				_, err = pinMessageTx(ctx, pin, thread, 0, new("remote note"))
+				require.NoError(t, err)
+				pushed := make(chan error, 1)
+				go func() {
+					_, err := upgraded.Push(ctx, true, nil)
+					pushed <- err
+				}()
+				require.Eventually(t, func() bool {
+					var waiting bool
+					require.NoError(t, syncer.pg.QueryRowContext(ctx, `
+						SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+						WHERE datname = current_database() AND pid <> pg_backend_pid()
+							AND wait_event_type = 'Lock')`).Scan(&waiting))
+					return waiting
+				}, 30*time.Second, 10*time.Millisecond, "the push never waited for the pin's row lock")
+				require.NoError(t, pin.Commit())
+				err = <-pushed
+				require.ErrorContains(t, err,
+					`push stopped: Codex thread `+thread+` has pins or other edits that must move to its page in project "other"`)
+				pins, err := store.ListPinnedMessages(ctx, thread, "")
+				require.NoError(t, err)
+				assert.Len(t, pins, 1, "the push deleted a pin added while it ran")
+				return
+			}
 			_, err = upgraded.Push(ctx, true, nil)
 			row, getErr := store.GetSessionFull(ctx, thread)
 			require.NoError(t, getErr)
@@ -464,7 +497,7 @@ func TestFilteredFullPushKeepsCuratedCodexThreadWhosePageIsExcluded(t *testing.T
 				return
 			}
 			require.ErrorContains(t, err,
-				`kept Codex thread `+thread+`: its pins and other curation move to its page in project "other"`)
+				`push stopped: Codex thread `+thread+` has pins or other edits that must move to its page in project "other"`)
 			require.NotNil(t, row, "the push deleted the thread row")
 			require.NotNil(t, row.DisplayName)
 			assert.Equal(t, "remote page title", *row.DisplayName)
