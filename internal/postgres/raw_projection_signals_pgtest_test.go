@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -40,18 +41,18 @@ func TestRawProjectionTranscriptsOnlyToolCoverage(t *testing.T) {
 	require.NoError(t, err)
 	_, err = tx.ExecContext(t.Context(), `INSERT INTO raw_content_revisions(session_id,group_id,content_revision,payload) VALUES('fixture-session','fixture-group',$1,$2)`, revision, []byte{})
 	require.NoError(t, err)
-	changed, err := publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals, nil)
+	changed, err := publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	prepared.Signals.ToolObservations = nil
-	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals, nil)
+	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals)
 	require.NoError(t, err)
 	assert.False(t, changed, "nil observations preserve the snapshot")
 	prepared.Signals.ToolObservations = []db.ToolObservation{}
-	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals, nil)
+	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals)
 	require.NoError(t, err)
 	assert.True(t, changed, "explicit empty observations clear stored facts")
-	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals, nil)
+	changed, err = publishRawRecency(t.Context(), tx, "fixture-session", prepared.Signals)
 	require.NoError(t, err)
 	assert.False(t, changed)
 	require.NoError(t, tx.Commit())
@@ -65,6 +66,7 @@ func TestRawProjectionEqualContentSettlesSignalsWithoutNewIdentity(t *testing.T)
 			now := ended.Add(time.Minute)
 			f.sink.options.Now = func() time.Time { return now }
 			outcome := projectionOutcome("Implement the requested change")
+			outcome.Outcome.Results[0].Result.Messages[0].DialogueText = new("requested change")
 			outcome.Outcome.Results[0].Result.Session.EndedAt = ended
 			outcome.Outcome.Results[0].Result.Session.Agent = agent
 			outcome.Outcome.Results[0].Result.Messages[1].ToolCalls[0].ToolName = "Grep"
@@ -137,16 +139,17 @@ func TestRawProjectionEqualContentSettlesSignalsWithoutNewIdentity(t *testing.T)
 			var outbox int
 			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT count(*) FROM raw_embedding_outbox`).Scan(&outbox))
 			// Model a pending session projected before dialogue derivation.
-			_, err = f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=139; UPDATE raw_content_revisions SET recency_state=recency_state-'Dialogue'-'DataVersion'`)
+			_, err = f.runtime.ExecContext(t.Context(), `UPDATE sessions SET data_version=139; DELETE FROM raw_message_dialogue`)
 			require.NoError(t, err)
 			now = ended.Add(11 * time.Minute)
 			changed, err := f.sink.SettlePendingSignals(t.Context(), 10)
 			require.NoError(t, err)
 			assert.Equal(t, 1, changed)
-			var version, marker int
-			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT s.data_version,COALESCE((r.recency_state->>'DataVersion')::int,0) FROM sessions s JOIN raw_content_revisions r ON r.session_id=s.id WHERE s.id=$1`, first.SessionID).Scan(&version, &marker))
+			var version int
+			var dialogue sql.NullString
+			require.NoError(t, f.runtime.QueryRowContext(t.Context(), `SELECT s.data_version,m.dialogue_text FROM sessions s JOIN messages m ON m.session_id=s.id WHERE s.id=$1 AND m.ordinal=0`, first.SessionID).Scan(&version, &dialogue))
 			assert.Equal(t, 139, version, "settling signals does not upgrade unproduced dialogue")
-			assert.Zero(t, marker)
+			assert.Equal(t, sql.NullString{String: "requested change", Valid: true}, dialogue, "settling leaves message dialogue unchanged")
 			assertCoverage()
 			a, ar = f.accept(t, "device-a", "settled-a", ar.Receipt, agent)
 			require.NoError(t, f.sink.Project(t.Context(), f.lease(t, a), a, outcome))

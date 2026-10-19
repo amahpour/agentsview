@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 
@@ -136,6 +137,30 @@ func TestHostedTenantRejectsForeignRawRowsAndUnknownTables(t *testing.T) {
 	assert.Error(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant))
 }
 
+func TestHostedDowngradeRefusesDialogueRelation(t *testing.T) {
+	f := newHostedFixture(t, "tenant-a")
+	inventory := hostedTables
+	t.Cleanup(func() { hostedTables = inventory })
+	hostedTables = slices.DeleteFunc(slices.Clone(inventory), func(table HostedTable) bool {
+		return table.Name == "raw_message_dialogue"
+	})
+	assert.ErrorContains(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant), "uninventoried relation raw_message_dialogue")
+	_, err := NewRawProjectionStore(f.runtime, RawProjectionOptions{Tenant: f.tenant})
+	assert.ErrorContains(t, err, "uninventoried relation raw_message_dialogue")
+	store, err := NewHostedStore(f.dsn, f.schema, f.tenant, false)
+	if store != nil {
+		t.Cleanup(func() { assert.NoError(t, store.Close()) })
+	}
+	assert.ErrorContains(t, err, "uninventoried relation raw_message_dialogue")
+
+	hostedTables = inventory
+	_, err = f.admin.ExecContext(t.Context(), `DROP TABLE raw_message_dialogue`)
+	require.NoError(t, err)
+	assert.ErrorContains(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant), "missing required tables")
+	require.NoError(t, EnsureHostedTenant(t.Context(), f.admin, f.schema, f.tenant))
+	require.NoError(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant))
+}
+
 func TestHostedTenantBoundCustodyRejectsMismatch(t *testing.T) {
 	pg := newHostedLegacyFixture(t)
 	s, err := NewTenantRawIngestStore(pg, "tenant-a")
@@ -224,7 +249,6 @@ func TestHostedTenantAuthAndJobFences(t *testing.T) {
 	assert.Empty(t, leases)
 	require.NoError(t, pg.QueryRowContext(t.Context(), `SELECT state FROM raw_ingest_jobs WHERE tenant_id='tenant-b'`).Scan(&state))
 	assert.Equal(t, "ready", state, "tenant A idle cleanup cannot retire tenant B obsolete jobs")
-
 }
 
 func TestHostedTenantRejectsDynamicVectorStorageBeforeMutation(t *testing.T) {
