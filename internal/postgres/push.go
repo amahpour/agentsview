@@ -2149,6 +2149,8 @@ func (s *Sync) reconcilePGMissingSessions(
 		// Threads whose page this push excludes, checked for curation under
 		// a row lock in the delete transaction below.
 		excluded := make(map[string]db.Session)
+		// Threads with a retained page, whose curation migration should move.
+		var paged []string
 		for _, id := range chunk {
 			if _, exists := present[id]; exists {
 				continue
@@ -2166,6 +2168,7 @@ func (s *Sync) reconcilePGMissingSessions(
 			if page == nil {
 				continue
 			}
+			paged = append(paged, id)
 			if projectFailsFilter(page.Project, s.projects, s.excludeProjects) {
 				excluded[id] = *page
 				continue
@@ -2196,6 +2199,17 @@ func (s *Sync) reconcilePGMissingSessions(
 		// cascades to that curation.
 		if err := s.migrateCodexPages(ctx, tx, pages, ownerMarker, legacyMarkerMachines); err != nil {
 			return err
+		}
+		// Migration retires a thread once its curation is on the page. A
+		// thread it skipped, such as a legacy thread restored remotely, still
+		// holds that curation, so keep the thread rather than delete it.
+		kept, err := lockCuratedCodexThreads(ctx, tx, paged)
+		if err != nil {
+			return err
+		}
+		if len(kept) > 0 {
+			log.Printf("postgres push: kept %d Codex thread(s) whose curation did not move to their page", len(kept))
+			missing = slices.DeleteFunc(missing, func(id string) bool { return slices.Contains(kept, id) })
 		}
 		// Recheck ownership and scope, and clear vectors only for deleted rows.
 		rows, err := tx.QueryContext(ctx,
@@ -3296,6 +3310,64 @@ func (s *Sync) pushMessages(
 	if err != nil {
 		return 0, err
 	}
+	if err := s.replaceUsageEvents(ctx, tx, sessionID); err != nil {
+		return 0, err
+	}
+	// Local sync can rewrite this transcript while the copy reads it page by
+	// page. A pinned message that moves across a page boundary would be
+	// missed, and restoring the pins would then drop its pin, so copy again
+	// whenever the transcript changed during the copy.
+	var count int
+	for attempt := 1; ; attempt++ {
+		before, err := s.localTranscriptRevision(ctx, sessionID)
+		if err != nil {
+			return 0, err
+		}
+		count, err = s.copySessionMessages(ctx, tx, sessionID)
+		if err != nil {
+			return count, err
+		}
+		after, err := s.localTranscriptRevision(ctx, sessionID)
+		if err != nil {
+			return count, err
+		}
+		if before == after {
+			break
+		}
+		if attempt == maxTranscriptCopyAttempts {
+			return count, fmt.Errorf(
+				"pushMessages %s: the transcript changed during %d copies; push again",
+				sessionID, attempt,
+			)
+		}
+	}
+
+	if err := restorePinnedMessages(
+		ctx, tx, sessionID, savedPins,
+	); err != nil {
+		return count, err
+	}
+
+	return count, nil
+}
+
+// maxTranscriptCopyAttempts bounds how often pushMessages copies a transcript
+// that local sync keeps rewriting.
+const maxTranscriptCopyAttempts = 3
+
+// localTranscriptRevision returns a session's local transcript revision, or
+// "" once the session is gone locally.
+func (s *Sync) localTranscriptRevision(ctx context.Context, sessionID string) (string, error) {
+	rev, err := s.local.TranscriptRevision(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return rev, err
+}
+
+// copySessionMessages replaces a session's PostgreSQL messages, tool calls,
+// and tool result events with the local transcript.
+func (s *Sync) copySessionMessages(ctx context.Context, tx *sql.Tx, sessionID string) (int, error) {
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM tool_result_events
 		WHERE session_id = $1
@@ -3320,10 +3392,6 @@ func (s *Sync) pushMessages(
 			"deleting pg messages: %w", err,
 		)
 	}
-	if err := s.replaceUsageEvents(ctx, tx, sessionID); err != nil {
-		return 0, err
-	}
-
 	count := 0
 	startOrdinal := 0
 	for {
@@ -3367,14 +3435,10 @@ func (s *Sync) pushMessages(
 		}
 		count += len(msgs)
 		startOrdinal = nextOrdinal
+		if s.afterMessagePage != nil {
+			s.afterMessagePage()
+		}
 	}
-
-	if err := restorePinnedMessages(
-		ctx, tx, sessionID, savedPins,
-	); err != nil {
-		return count, err
-	}
-
 	return count, nil
 }
 

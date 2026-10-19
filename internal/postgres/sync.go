@@ -302,6 +302,8 @@ type Sync struct {
 	pushBatchSize int
 	// afterPushBatch is a test hook called after each session batch.
 	afterPushBatch func()
+	// afterMessagePage is a test hook called after each copied message page.
+	afterMessagePage func()
 
 	closeOnce sync.Once
 	closeErr  error
