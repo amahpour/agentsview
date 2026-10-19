@@ -2208,7 +2208,7 @@ func (s *Sync) reconcilePGMissingSessions(
 			return err
 		}
 		if len(kept) > 0 {
-			log.Printf("postgres push: kept %d Codex thread(s) whose curation did not move to their page", len(kept))
+			log.Printf("postgres push: kept %d older Codex thread(s) that still hold pins, stars, or titles", len(kept))
 			missing = slices.DeleteFunc(missing, func(id string) bool { return slices.Contains(kept, id) })
 		}
 		// Recheck ownership and scope, and clear vectors only for deleted rows.
@@ -3314,9 +3314,11 @@ func (s *Sync) pushMessages(
 		return 0, err
 	}
 	// Local sync can rewrite this transcript while the copy reads it page by
-	// page. A pinned message that moves across a page boundary would be
+	// page. A pinned message that moves into a page the copy already read is
 	// missed, and restoring the pins would then drop its pin, so copy again
-	// whenever the transcript changed during the copy.
+	// when the transcript changed and a pin lost its message. Other gaps from
+	// a changed transcript need no retry: the change stamps the session after
+	// this push's cutoff, so the next push copies it again.
 	var count int
 	for attempt := 1; ; attempt++ {
 		before, err := s.localTranscriptRevision(ctx, sessionID)
@@ -3334,10 +3336,16 @@ func (s *Sync) pushMessages(
 		if before == after {
 			break
 		}
+		found, err := pinsFindMessages(ctx, tx, sessionID, savedPins)
+		if err != nil {
+			return count, err
+		}
+		if found {
+			break
+		}
 		if attempt == maxTranscriptCopyAttempts {
-			return count, fmt.Errorf(
-				"pushMessages %s: the transcript changed during %d copies; push again",
-				sessionID, attempt,
+			return count, errors.New(
+				"the session changed while it was being copied; push again once it stops changing",
 			)
 		}
 	}
@@ -3354,6 +3362,21 @@ func (s *Sync) pushMessages(
 // maxTranscriptCopyAttempts bounds how often pushMessages copies a transcript
 // that local sync keeps rewriting.
 const maxTranscriptCopyAttempts = 3
+
+// pinsFindMessages reports whether every snapshotted pin still identifies a
+// message among the rows copied for sessionID.
+func pinsFindMessages(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+	pins []savedPostgresPin,
+) (bool, error) {
+	for _, pin := range pins {
+		_, _, ok, err := resolvePinnedMessageTarget(ctx, tx, sessionID, pin)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
 
 // localTranscriptRevision returns a session's local transcript revision, or
 // "" once the session is gone locally.
