@@ -3774,7 +3774,7 @@ func TestFilteredPushReconcilesProjectMoveCommittedDuringPush(t *testing.T) {
 	// finished without waiting.
 	var pushErr error
 	finished := false
-	for !finished && !testutil.GoroutineBlockedOnMutexIn("(*DB).lockWriterCtx") {
+	for !finished && !testutil.GoroutineBlockedOnMutexIn("lockctx.Lock") {
 		select {
 		case pushErr = <-pushed:
 			finished = true

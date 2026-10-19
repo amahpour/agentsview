@@ -730,7 +730,7 @@ func TestRunExclusiveCtxStopsWaitingWhenContextEnds(t *testing.T) {
 		})
 	}()
 	require.Eventually(t, func() bool {
-		return testutil.GoroutineBlockedOnMutexIn("(*Engine).RunExclusiveCtx")
+		return testutil.GoroutineBlockedOnMutexIn("lockctx.Lock")
 	}, 10*time.Second, 5*time.Millisecond)
 	cancel()
 	select {

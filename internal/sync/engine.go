@@ -30,6 +30,7 @@ import (
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/friction"
 	"go.kenn.io/agentsview/internal/ingest"
+	"go.kenn.io/agentsview/internal/lockctx"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/pathutil"
 	"go.kenn.io/agentsview/internal/secrets"
@@ -4994,22 +4995,8 @@ func (e *Engine) RunExclusiveCtx(ctx context.Context, work func() error) error {
 			"RunExclusiveCtx refused on report-only parse-diff engine",
 		)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := lockctx.Lock(ctx, &e.syncMu); err != nil {
 		return err
-	}
-	locked := make(chan struct{})
-	go func() {
-		e.syncMu.Lock()
-		close(locked)
-	}()
-	select {
-	case <-locked:
-	case <-ctx.Done():
-		go func() {
-			<-locked
-			e.syncMu.Unlock()
-		}()
-		return ctx.Err()
 	}
 	defer e.syncMu.Unlock()
 	return work()

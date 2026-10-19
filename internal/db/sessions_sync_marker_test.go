@@ -538,7 +538,7 @@ func TestMirrorPushCutoffCoversOpenWriteTransaction(t *testing.T) {
 	// lock, so a push that ignores the open transaction lists first.
 	var got listing
 	received := false
-	for !received && !testutil.GoroutineBlockedOnMutexIn("(*DB).lockWriterCtx") {
+	for !received && !testutil.GoroutineBlockedOnMutexIn("lockctx.Lock") {
 		select {
 		case got = <-listed:
 			received = true
@@ -722,6 +722,9 @@ func TestPushStateWritesStopWaitingBehindALongWrite(t *testing.T) {
 		"Update": func(ctx context.Context, d *DB) error {
 			return d.Update(ctx, func(*sql.Tx) error { return nil })
 		},
+		"DeleteSyncStateByPrefix": func(ctx context.Context, d *DB) error {
+			return d.DeleteSyncStateByPrefix(ctx, "duckdb_")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			database := testDB(t)
@@ -743,7 +746,7 @@ func TestPushStateWritesStopWaitingBehindALongWrite(t *testing.T) {
 			saved := make(chan error, 1)
 			go func() { saved <- write(ctx, database) }()
 			require.Eventually(t, func() bool {
-				return testutil.GoroutineBlockedOnMutexIn("(*DB).lockWriterCtx")
+				return testutil.GoroutineBlockedOnMutexIn("lockctx.Lock")
 			}, 10*time.Second, 5*time.Millisecond)
 			cancel()
 			select {

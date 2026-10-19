@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/agentsview/internal/lockctx"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -6826,26 +6827,12 @@ func (db *DB) MirrorPushCutoff(ctx context.Context) (string, error) {
 	}
 }
 
-// lockWriterCtx takes the write lock in the lock's normal queue, so a caller
-// is not starved by back-to-back writes, and returns if ctx ends first. A
-// request that gives up leaves a goroutine that releases the lock once it is
-// granted.
+// lockWriterCtx takes the write lock, or returns once ctx ends.
 func (db *DB) lockWriterCtx(ctx context.Context) error {
-	locked := make(chan struct{})
-	go func() {
-		db.mu.Lock()
-		close(locked)
-	}()
-	select {
-	case <-locked:
-		return nil
-	case <-ctx.Done():
-		go func() {
-			<-locked
-			db.mu.Unlock()
-		}()
-		return fmt.Errorf("stopped while waiting for an archive write to finish: %w", ctx.Err())
+	if err := lockctx.Lock(ctx, &db.mu); err != nil {
+		return fmt.Errorf("stopped while waiting for an archive write to finish: %w", err)
 	}
+	return nil
 }
 
 // WaitForWriter blocks while the writer is closed for a worker handoff. It
