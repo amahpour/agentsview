@@ -169,11 +169,6 @@ func (c *schemaProbeConn) QueryContext(
 		}
 	}
 	switch {
-	case strings.Contains(normalized, "to_regclass('raw_content_revisions')"):
-		return &schemaProbeRows{
-			columns: []string{"exists"},
-			values:  [][]driver.Value{{c.state.existingTables["raw_content_revisions"]}},
-		}, nil
 	case strings.Contains(normalized, "information_schema.tables"):
 		name := ""
 		if len(args) > 0 {
