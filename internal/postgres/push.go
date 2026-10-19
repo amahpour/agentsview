@@ -2160,9 +2160,21 @@ func (s *Sync) reconcilePGMissingSessions(
 			if err != nil {
 				return fmt.Errorf("reading retained Codex page: %w", err)
 			}
-			if page != nil {
-				pages = append(pages, *page)
+			if page == nil {
+				continue
 			}
+			if projectFailsFilter(page.Project, s.projects, s.excludeProjects) {
+				// An excluded page fails the push only when the thread has
+				// curation to move. Otherwise the thread row goes.
+				curated, err := s.codexThreadCurated(ctx, id)
+				if err != nil {
+					return err
+				}
+				if !curated {
+					continue
+				}
+			}
+			pages = append(pages, *page)
 		}
 		if len(missing) == 0 {
 			return nil
@@ -4577,4 +4589,21 @@ func (s *Sync) syncCursorUsageEvents(ctx context.Context) error {
 		return fmt.Errorf("committing pg cursor usage sync: %w", err)
 	}
 	return nil
+}
+
+// codexThreadCurated reports whether a PostgreSQL thread row holds curation a
+// user added remotely: pins, a star, a rename, or a trash change.
+func (s *Sync) codexThreadCurated(ctx context.Context, threadID string) (bool, error) {
+	var curated bool
+	if err := s.pg.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pinned_messages WHERE session_id = $1)
+			OR EXISTS (SELECT 1 FROM starred_sessions WHERE session_id = $1)
+			OR EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND (
+				display_name IS DISTINCT FROM source_display_name
+				OR deleted_at IS DISTINCT FROM source_deleted_at))`,
+		threadID,
+	).Scan(&curated); err != nil {
+		return false, fmt.Errorf("checking Codex thread curation: %w", err)
+	}
+	return curated, nil
 }

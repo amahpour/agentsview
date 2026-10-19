@@ -152,7 +152,10 @@ func (s *Sync) migrateCodexPages(
 			return fmt.Errorf("cannot replace legacy Codex thread: retained page %s is unavailable", pageID)
 		}
 		if projectFailsFilter(page.Project, s.projects, s.excludeProjects) {
-			return fmt.Errorf("preserving the Codex page requires including project %q in the push", page.Project)
+			return fmt.Errorf(
+				"kept Codex thread %s: its pins and other curation move to its page in project %q, which this push excludes; "+
+					"include that project with --projects, or remove it from --exclude-projects or the exclude_projects setting",
+				old.id, page.Project)
 		}
 		var pageExists bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)`, pageID).Scan(&pageExists); err != nil {

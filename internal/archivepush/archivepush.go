@@ -73,7 +73,7 @@ func (s *ReplicaSession) Push(
 ) (storage.PushResult, error) {
 	if engine := s.FrictionReview; engine != nil {
 		// The push itself runs without the sync lock.
-		if err := engine.RunExclusive(func() error {
+		if err := engine.RunExclusiveCtx(ctx, func() error {
 			return engine.DrainStaleFrictionLocked(ctx)
 		}); err != nil {
 			return storage.PushResult{}, err

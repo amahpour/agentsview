@@ -5569,9 +5569,11 @@ func (db *DB) WriterClosed() bool {
 
 // Update executes fn within a write lock and transaction.
 // The transaction is committed if fn returns nil, rolled back
-// otherwise.
+// otherwise. It stops waiting for the lock when ctx ends.
 func (db *DB) Update(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	db.mu.Lock()
+	if err := db.lockWriterCtx(ctx); err != nil {
+		return err
+	}
 	defer db.mu.Unlock()
 
 	// Fail fast before handing out a raw *sql.Tx: while the writer is closed
@@ -5620,7 +5622,9 @@ func scanSyncState(row *sql.Row) (string, error) {
 
 // SetSyncState writes a value to the pg_sync_state table.
 func (db *DB) SetSyncState(ctx context.Context, key, value string) error {
-	db.mu.Lock()
+	if err := db.lockWriterCtx(ctx); err != nil {
+		return err
+	}
 	defer db.mu.Unlock()
 	_, err := db.getWriter().Exec(ctx,
 		setSyncStateQuery,
@@ -5729,7 +5733,9 @@ func escapeSyncStatePrefix(prefix string) string {
 // GetOrCreateSyncState returns a sync-state value, atomically creating it
 // with defaultValue when absent.
 func (db *DB) GetOrCreateSyncState(ctx context.Context, key, defaultValue string) (string, error) {
-	db.mu.Lock()
+	if err := db.lockWriterCtx(ctx); err != nil {
+		return "", err
+	}
 	defer db.mu.Unlock()
 	w := db.getWriter()
 	var value string

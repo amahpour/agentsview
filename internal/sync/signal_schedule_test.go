@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -698,4 +699,50 @@ func TestSignalSchedulerRealTimerFlushes(t *testing.T) {
 		assert.Equal(t, 2, runs,
 			"deferred recompute should flush via the real timer")
 	})
+}
+
+// Friction review before a push takes the engine lock. A canceled push must
+// not wait out a sync that holds it, and must not run its work afterwards.
+func TestRunExclusiveCtxStopsWaitingWhenContextEnds(t *testing.T) {
+	fx := newEngineFixture(t)
+	held := make(chan struct{})
+	release := make(chan struct{})
+	releaseLock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseLock)
+	exclusive := make(chan error, 1)
+	go func() {
+		exclusive <- fx.engine.RunExclusive(func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var ran atomic.Bool
+	waited := make(chan error, 1)
+	go func() {
+		waited <- fx.engine.RunExclusiveCtx(ctx, func() error {
+			ran.Store(true)
+			return nil
+		})
+	}()
+	require.Eventually(t, func() bool {
+		return testutil.GoroutineBlockedOnMutexIn("(*Engine).RunExclusiveCtx")
+	}, 10*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-waited:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "the canceled caller kept waiting for the lock")
+	}
+
+	releaseLock()
+	require.NoError(t, <-exclusive)
+	require.NoError(t, fx.engine.RunExclusiveCtx(t.Context(), func() error { return nil }),
+		"the abandoned wait must release the lock")
+	assert.False(t, ran.Load(), "the canceled work ran")
 }

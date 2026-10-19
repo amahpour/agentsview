@@ -706,3 +706,55 @@ func TestMirrorPushCutoffStopsWaitingBehindALongWrite(t *testing.T) {
 	_, err := database.MirrorPushCutoff(t.Context())
 	require.NoError(t, err)
 }
+
+// A push saves its progress with a time limit, and a canceled push must stop
+// saving. Both must hold while a long archive write has the lock, or the push
+// keeps the daemon's push turn until the write ends.
+func TestPushStateWritesStopWaitingBehindALongWrite(t *testing.T) {
+	for name, write := range map[string]func(context.Context, *DB) error{
+		"SetSyncState": func(ctx context.Context, d *DB) error {
+			return d.SetSyncState(ctx, "last_push_at", "cutoff")
+		},
+		"GetOrCreateSyncState": func(ctx context.Context, d *DB) error {
+			_, err := d.GetOrCreateSyncState(ctx, "pg_push_marker_id", "marker")
+			return err
+		},
+		"Update": func(ctx context.Context, d *DB) error {
+			return d.Update(ctx, func(*sql.Tx) error { return nil })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := testDB(t)
+			inWrite := make(chan struct{})
+			release := make(chan struct{})
+			endWrite := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(endWrite)
+			writeDone := make(chan error, 1)
+			go func() {
+				writeDone <- database.Update(t.Context(), func(*sql.Tx) error {
+					close(inWrite)
+					<-release
+					return nil
+				})
+			}()
+			<-inWrite
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			saved := make(chan error, 1)
+			go func() { saved <- write(ctx, database) }()
+			require.Eventually(t, func() bool {
+				return testutil.GoroutineBlockedOnMutexIn("(*DB).lockWriterCtx")
+			}, 10*time.Second, 5*time.Millisecond)
+			cancel()
+			select {
+			case err := <-saved:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(5 * time.Second):
+				require.Fail(t, "the canceled write kept waiting for the lock")
+			}
+			endWrite()
+			require.NoError(t, <-writeDone)
+			require.NoError(t, write(t.Context(), database))
+		})
+	}
+}

@@ -6826,7 +6826,7 @@ func (db *DB) MirrorPushCutoff(ctx context.Context) (string, error) {
 	}
 }
 
-// lockWriterCtx takes the write lock in the lock's normal queue, so a cutoff
+// lockWriterCtx takes the write lock in the lock's normal queue, so a caller
 // is not starved by back-to-back writes, and returns if ctx ends first. A
 // request that gives up leaves a goroutine that releases the lock once it is
 // granted.
