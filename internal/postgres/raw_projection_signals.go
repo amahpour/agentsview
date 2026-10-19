@@ -67,15 +67,18 @@ func publishRawRecency(ctx context.Context, tx *sql.Tx, id string, update db.Ses
 	if next.Dialogue != nil {
 		next.DataVersion = db.CurrentDataVersion()
 	}
-	// A retained prefix can share a group with a different live revision, so
-	// fence the whole group.
-	versioned, err := tx.ExecContext(ctx, `UPDATE sessions SET data_version=$2 WHERE raw_group_id=(SELECT group_id FROM raw_content_revisions WHERE session_id=$1) AND data_version<$2`, id, db.CurrentDataVersion())
-	if err != nil {
-		return false, err
-	}
-	versionCount, err := versioned.RowsAffected()
-	if err != nil {
-		return false, err
+	var versionCount int64
+	if messages != nil {
+		// A retained prefix can share a group with a different live revision, so
+		// fence the whole group.
+		versioned, err := tx.ExecContext(ctx, `UPDATE sessions SET data_version=$2 WHERE raw_group_id=(SELECT group_id FROM raw_content_revisions WHERE session_id=$1) AND data_version<$2`, id, db.CurrentDataVersion())
+		if err != nil {
+			return false, err
+		}
+		versionCount, err = versioned.RowsAffected()
+		if err != nil {
+			return false, err
+		}
 	}
 	if next.ToolObservations == nil {
 		next.ToolObservations = prior.ToolObservations
