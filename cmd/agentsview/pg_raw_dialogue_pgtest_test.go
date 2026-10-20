@@ -33,7 +33,8 @@ func TestRawProjectionDialogueRolloutRequeuesCompletedProductionVersion(t *testi
 	require.NoError(t, err)
 	sink, err := postgres.NewRawProjectionStore(runtime, postgres.RawProjectionOptions{Tenant: cfg.PG.RawTenant})
 	require.NoError(t, err)
-	const previousVersion = "parser-data-140+friction-v1"
+	// The last released version, before parsers produced dialogue.
+	const previousVersion = "parser-data-139+friction-v1"
 	currentVersion := rawProcessingVersion()
 	custody, err := rawsync.NewService(objects, jobs, rawsync.DefaultManifestLimits(), previousVersion)
 	require.NoError(t, err)
