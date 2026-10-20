@@ -829,15 +829,18 @@ ordering may shift.
 DuckDB mirrors rebuild on their next push to fill dialogue. The first ClickHouse
 push after upgrading is a full push to fill dialogue.
 
-PostgreSQL schema setup adds the dialogue column and builds an index for
-substring search. The first push after upgrading publishes every session in its
-scope once to fill existing rows. A restricted hosted runtime role needs
-`UPDATE(dialogue_text)` on `messages`. For hosted raw uploads, run
-`agentsview pg raw-reparse hosted --run-id <id>` after upgrading the server.
-Repeat the same run ID until the command reports `complete=true`. A change to
-dialogue derivation alone keeps session IDs, content revisions, and embeddings.
-A parser upgrade that changes other fields, such as Pi reasoning text, produces
-a new content revision and session ID.
+PostgreSQL schema setup adds the dialogue column and builds trigram indexes on
+dialogue and reasoning beside the existing `content` index. The dialogue index
+is close to the size of the `content` index, the reasoning index grows with
+stored reasoning, and both slow message writes. Building them on an existing
+mirror blocks writes to `messages` until each finishes. The first push after
+upgrading publishes every session in its scope once to fill existing rows. A
+restricted hosted runtime role needs `UPDATE(dialogue_text)` on `messages`. For
+hosted raw uploads, run `agentsview pg raw-reparse hosted --run-id <id>` after
+upgrading the server. Repeat the same run ID until the command reports
+`complete=true`. A change to dialogue derivation alone keeps session IDs,
+content revisions, and embeddings. A parser upgrade that changes other fields,
+such as Pi reasoning text, produces a new content revision and session ID.
 
 Artifact transport is a separate follow-up.
 Transcript display, block order, and artifact format v4 remain unchanged.
