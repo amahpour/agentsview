@@ -148,17 +148,23 @@ func EnsureHostedTenant(ctx context.Context, database *sql.DB, schema, tenant st
 
 // Keep optional search indexes from aborting tenant provisioning when pg_trgm
 // is unavailable. The savepoint contains errors inside the owner transaction.
+// The extension is database-wide, so it goes in public: installed in a tenant
+// schema, every other tenant's indexes would depend on that tenant's schema.
 func createHostedContentSearchIndexes(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `SAVEPOINT content_search_indexes`); err != nil {
 		return err
 	}
-	if err := createContentSearchIndexesPG(ctx, tx); err != nil {
+	_, err := tx.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public`)
+	if err == nil {
+		err = createContentSearchIndexesPG(ctx, tx)
+	}
+	if err != nil {
 		if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT content_search_indexes`); rollbackErr != nil {
 			return rollbackErr
 		}
 		log.Printf("pg schema: content search indexes unavailable, search will scan: %v", err)
 	}
-	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT content_search_indexes`)
+	_, err = tx.ExecContext(ctx, `RELEASE SAVEPOINT content_search_indexes`)
 	return err
 }
 

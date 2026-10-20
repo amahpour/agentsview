@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -159,6 +160,39 @@ func TestHostedDowngradeRefusesDialogueRelation(t *testing.T) {
 	assert.ErrorContains(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant), "missing required tables")
 	require.NoError(t, EnsureHostedTenant(t.Context(), f.admin, f.schema, f.tenant))
 	require.NoError(t, CheckHostedTenant(t.Context(), f.runtime, f.schema, f.tenant))
+}
+
+// Dropping a tenant schema must not take pg_trgm, and every other tenant's
+// trigram indexes, with it.
+func TestHostedProvisioningInstallsTrigramOutsideTenantSchema(t *testing.T) {
+	admin, err := Open(testPGURL(t), "public", false)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, admin.Close()) })
+	database := fmt.Sprintf("hosted_trgm_%x", rand.Uint64())
+	if _, err = admin.ExecContext(t.Context(), `CREATE DATABASE `+database); err != nil {
+		t.Skipf("cannot create an isolated database: %v", err)
+	}
+	t.Cleanup(func() {
+		_, err := admin.ExecContext(context.Background(), `DROP DATABASE IF EXISTS `+database+` WITH (FORCE)`)
+		assert.NoError(t, err)
+	})
+	dsn, err := url.Parse(testPGURL(t))
+	require.NoError(t, err)
+	dsn.Path = "/" + database
+	owner, err := Open(dsn.String(), "tenant_a", false)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, owner.Close()) })
+	require.NoError(t, EnsureHostedTenant(t.Context(), owner, "tenant_a", "tenant-a"))
+	require.NoError(t, EnsureHostedTenant(t.Context(), owner, "tenant_b", "tenant-b"))
+
+	var extensionSchema string
+	require.NoError(t, owner.QueryRowContext(t.Context(), `SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='pg_trgm'`).Scan(&extensionSchema))
+	assert.Equal(t, "public", extensionSchema)
+	_, err = owner.ExecContext(t.Context(), `DROP SCHEMA tenant_a CASCADE`)
+	require.NoError(t, err)
+	var indexed bool
+	require.NoError(t, owner.QueryRowContext(t.Context(), `SELECT to_regclass('tenant_b.idx_messages_dialogue_trgm') IS NOT NULL`).Scan(&indexed))
+	assert.True(t, indexed, "tenant B keeps its dialogue index")
 }
 
 func TestHostedTenantBoundCustodyRejectsMismatch(t *testing.T) {

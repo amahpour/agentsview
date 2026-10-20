@@ -155,6 +155,12 @@ The runtime fails startup until provisioning and these grants are complete.
 Hosted storage keeps retained dialogue in `raw_message_dialogue` and copies it
 into materialized message rows.
 
+Provisioning installs `pg_trgm` in `public` so that no tenant schema owns the
+extension, then builds trigram indexes for message search. If the owner cannot
+create the extension there, provisioning logs a warning and search scans
+`messages`. A database superuser can run
+`CREATE EXTENSION pg_trgm SCHEMA public` and provisioning again.
+
 Sequence names above are those created by provisioning. For an adopted schema,
 resolve the actual owned sequence with `pg_get_serial_sequence`; serial IDs need
 `USAGE` or `UPDATE`, while identity-generated IDs need no separate sequence
